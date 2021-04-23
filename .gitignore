@@ -1,0 +1,6 @@
+/target
+.idea/
+rumble.iml
+
+# generated files
+src/proto/mumble.rs
