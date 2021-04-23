@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::rustls::{Certificate, PrivateKey, ServerConfig, NoClientAuth};
 use tokio_rustls::{TlsAcceptor, server::TlsStream};
-use crate::connection::{MumblePacketStream};
+use crate::protocol::{MumblePacketStream};
 
 pub struct Config {
     pub ip_address: IpAddr,

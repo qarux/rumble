@@ -1,6 +1,6 @@
 mod server;
 mod proto;
-mod connection;
+mod protocol;
 
 use std::fs::File;
 use std::io::BufReader;
