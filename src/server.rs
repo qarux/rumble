@@ -1,18 +1,25 @@
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+
 use tokio::net::{TcpListener, TcpStream};
-use tokio_rustls::rustls::{Certificate, PrivateKey, ServerConfig, NoClientAuth};
-use tokio_rustls::{TlsAcceptor, server::TlsStream};
-use crate::protocol::{MumblePacketStream};
+use tokio_rustls::{server::TlsStream, TlsAcceptor};
+use tokio_rustls::rustls::{Certificate, NoClientAuth, PrivateKey, ServerConfig};
+
+use crate::connection::Connection;
+use crate::db::Db;
+use crate::proto::mumble::Version;
+use crate::protocol::MumblePacketStream;
 
 pub struct Config {
     pub ip_address: IpAddr,
     pub port: u16,
     pub certificate: Certificate,
     pub private_key: PrivateKey,
+    pub path_to_db_file: String,
 }
 
 pub async fn run(config: Config) -> std::io::Result<()> {
+    let db = Arc::new(Db::open(&config.path_to_db_file));
     let mut tls_config = ServerConfig::new(NoClientAuth::new());
     tls_config.set_single_cert(vec![config.certificate], config.private_key)
         .expect("Invalid private key");
@@ -25,14 +32,15 @@ pub async fn run(config: Config) -> std::io::Result<()> {
     loop {
         let (stream, _) = listener.accept().await?;
         let acceptor = acceptor.clone();
+        let db = Arc::clone(&db);
 
         tokio::spawn(async move {
             let stream = acceptor.accept(stream).await;
             if let Ok(stream) = stream {
-                process(MumblePacketStream::new(stream)).await;
+                process(db, MumblePacketStream::new(stream)).await;
             }
         });
     }
 }
 
-async fn process(stream: MumblePacketStream<TlsStream<TcpStream>>) {}
+async fn process(db: Arc<Db>, stream: MumblePacketStream<TlsStream<TcpStream>>) {}

@@ -1,12 +1,14 @@
+use std::fs::File;
+use std::io::BufReader;
+
+use clap::{App, Arg};
+use tokio::runtime::Builder;
+use tokio_rustls::rustls::{Certificate, internal::pemfile, PrivateKey};
+
 mod server;
 mod proto;
 mod protocol;
-
-use std::fs::File;
-use std::io::BufReader;
-use clap::{Arg, App};
-use tokio::runtime::Builder;
-use tokio_rustls::rustls::{Certificate, PrivateKey, internal::pemfile};
+mod db;
 
 fn main() {
     let matches = App::new("Rumble")
@@ -41,12 +43,14 @@ fn main() {
     let port = matches.value_of("port").unwrap();
     let cert_file = matches.value_of("certificate").unwrap();
     let keyfile = matches.value_of("private key").unwrap();
+    let path = "db/".to_string();
 
     let config = server::Config {
         ip_address: ip.parse().unwrap(),
         port: port.parse().unwrap(),
         certificate: read_certificate(cert_file),
-        private_key: read_private_key(keyfile)
+        private_key: read_private_key(keyfile),
+        path_to_db_file: path,
     };
 
     let tokio_rt = Builder::new_multi_thread()
@@ -54,7 +58,7 @@ fn main() {
         .build()
         .unwrap();
     tokio_rt.block_on(async {
-        server::run(config).await;
+        server::run(config).await.unwrap();
     });
 }
 
