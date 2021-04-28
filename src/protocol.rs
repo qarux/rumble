@@ -6,6 +6,8 @@ use crate::proto::mumble::{Version, Authenticate, Ping, Reject, ServerSync,
                            ContextActionModify, ContextAction, UserList, VoiceTarget, PermissionQuery,
                            CodecVersion, UserStats, RequestBlob, ServerConfig, SuggestConfig};
 
+pub const MUMBLE_PROTOCOL_VERSION: u32 = 0b0000_0001_0011_0100;
+
 const VERSION: u16 = 0;
 const UDP_TUNNEL: u16 = 1;
 const AUTHENTICATE: u16 = 2;

@@ -8,6 +8,7 @@ use tokio_rustls::rustls::{Certificate, internal::pemfile, PrivateKey};
 mod server;
 mod proto;
 mod protocol;
+mod connection;
 mod db;
 
 fn main() {
