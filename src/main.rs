@@ -10,6 +10,7 @@ mod proto;
 mod protocol;
 mod connection;
 mod db;
+mod client;
 
 fn main() {
     let matches = App::new("Rumble")

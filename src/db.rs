@@ -1,20 +1,34 @@
+use std::collections::HashMap;
+
+use tokio::sync::RwLock;
+
 use serde::{Deserialize, Serialize};
 
+const ROOT_CHANNEL_ID: u32 = 0;
 const USER_TREE_NAME: &[u8] = b"users";
 const CHANNEL_TREE_NAME: &[u8] = b"channels";
-const ROOT_CHANNEL_KEY: &[u8] = &0_u64.to_be_bytes();
+
+type SessionId = u32;
 
 pub struct Db {
     db: sled::Db,
     users: sled::Tree,
     channels: sled::Tree,
+    connected_users: RwLock<HashMap<SessionId, User>>,
+}
+
+pub struct User {
+    pub id: Option<u32>,
+    pub username: String,
+    pub channel_id: u32,
+    pub session_id: SessionId,
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct User {
-    pub username: String,
-    pub channel_id: u32,
-    pub is_connected: bool,
+struct PersistentUserData {
+    id: u32,
+    username: String,
+    channel_id: u32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -34,39 +48,58 @@ impl Db {
             name: "Root".to_string(),
         }).unwrap();
         channels.compare_and_swap(
-            ROOT_CHANNEL_KEY,
+            ROOT_CHANNEL_ID.to_be_bytes(),
             Option::<&[u8]>::None,
             Some(root_channel))
-            .unwrap().unwrap();
+            .unwrap();
 
         Db {
             db,
             users,
             channels,
+            connected_users: RwLock::new(HashMap::new()),
         }
     }
 
-    pub async fn add_new_user(&self, user: User) {
-        let id = self.users.len().to_be_bytes();
-
-        self.users.insert(
-            id,
-            bincode::serialize(&user).unwrap(),
-        ).unwrap();
-
-        self.users.flush_async().await.unwrap();
+    pub async fn add_new_user(&self, username: String) -> u32 {
+        let mut connected_users = self.connected_users.write().await;
+        let session_id = connected_users.len() as u32;
+        connected_users.insert(session_id, User {
+            id: None,
+            username,
+            channel_id: ROOT_CHANNEL_ID,
+            session_id,
+        });
+        session_id
     }
 
-    pub fn get_channels(&self) -> Vec<Channel> {
+    pub async fn get_channels(&self) -> Vec<Channel> {
         self.channels.iter().values()
             .map(|channel| bincode::deserialize(&channel.unwrap()).unwrap())
             .collect()
     }
 
-    pub fn get_connected_users(&self) -> Vec<User> {
-        self.users.iter().values()
-            .map(|user| bincode::deserialize(&user.unwrap()).unwrap())
-            .filter(|user: &User| user.is_connected)
-            .collect()
+    pub async fn get_connected_users(&self) -> Vec<User> {
+        let users = self.connected_users.read().await;
+        users.values().map(|el| el.clone()).collect()
+    }
+
+    pub async fn get_user_by_session_id(&self, session_id: u32) -> Option<User> {
+        let connected_users = self.connected_users.read().await;
+        if let Some(user) = connected_users.get(&session_id) {
+            return Some(user.clone())
+        }
+        None
+    }
+}
+
+impl Clone for User {
+    fn clone(&self) -> Self {
+        User {
+            id: self.id,
+            username: self.username.clone(),
+            channel_id: self.channel_id,
+            session_id: self.session_id,
+        }
     }
 }

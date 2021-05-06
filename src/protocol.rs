@@ -1,5 +1,5 @@
 use protobuf::{Message, ProtobufError};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
 
 use crate::proto::mumble::{ACL as Acl, Authenticate, BanList, ChannelRemove, ChannelState,
                            CodecVersion, ContextAction, ContextActionModify, CryptSetup, PermissionDenied,
@@ -105,20 +105,24 @@ enum Codecs {
     Opus,
 }
 
-pub fn new<S, R, W>(stream: S) -> (MumblePacketReader<R>, MumblePacketWriter<W>)
+pub fn new<S>(stream: S) -> (MumblePacketReader<ReadHalf<S>>, MumblePacketWriter<WriteHalf<S>>)
     where
         S: AsyncRead + AsyncWrite + Unpin + Send,
-        R: AsyncRead + Unpin + Send,
-        W: AsyncWrite + Unpin + Send,
 {
     let (reader, writer) = tokio::io::split(stream);
-    (MumblePacketReader { reader }, MumblePacketWriter { writer })
+    (MumblePacketReader::new(reader), MumblePacketWriter::new(writer))
 }
 
 impl<R> MumblePacketReader<R>
     where
         R: AsyncRead + Unpin + Send,
 {
+    pub fn new(reader: R) -> Self {
+        MumblePacketReader {
+            reader
+        }
+    }
+
     pub async fn read(&mut self) -> Result<MumblePacket, Error> {
         let packet_type = self.reader.read_u16().await?;
         let payload_length = self.reader.read_u32().await?;
@@ -286,6 +290,12 @@ impl<W> MumblePacketWriter<W>
     where
         W: AsyncWrite + Unpin + Send,
 {
+    pub fn new(writer: W) -> Self {
+        MumblePacketWriter {
+            writer
+        }
+    }
+
     pub async fn write(&mut self, packet: MumblePacket) -> Result<(), Error> {
         match packet {
             MumblePacket::UdpTunnel(value) => {
