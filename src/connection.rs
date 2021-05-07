@@ -72,7 +72,7 @@ impl<S> Connection<S>
         let mut permission_query = PermissionQuery::new();
         permission_query.set_permissions(134743822);
         permission_query.set_channel_id(0);
-        writer.write(MumblePacket::PermissionQuery(permission_query));
+        writer.write(MumblePacket::PermissionQuery(permission_query)).await?;
 
         //User states
         let connected_users = db.get_connected_users().await;

@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 
-use tokio::sync::RwLock;
-
 use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
 
 const ROOT_CHANNEL_ID: u32 = 0;
 const USER_TREE_NAME: &[u8] = b"users";
@@ -81,15 +80,20 @@ impl Db {
 
     pub async fn get_connected_users(&self) -> Vec<User> {
         let users = self.connected_users.read().await;
-        users.values().map(|el| el.clone()).collect()
+        users.values().cloned().collect()
     }
 
     pub async fn get_user_by_session_id(&self, session_id: u32) -> Option<User> {
         let connected_users = self.connected_users.read().await;
         if let Some(user) = connected_users.get(&session_id) {
-            return Some(user.clone())
+            return Some(user.clone());
         }
         None
+    }
+
+    pub async fn remove_connected_user(&self, session_id: u32) {
+        let mut connected_users = self.connected_users.write().await;
+        connected_users.remove(&session_id);
     }
 }
 

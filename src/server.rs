@@ -1,19 +1,15 @@
-use std::collections::{HashMap, HashSet};
-use std::future::Future;
+use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::task::{Context, Poll};
 
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, RwLock};
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::sync::RwLock;
 use tokio_rustls::{server::TlsStream, TlsAcceptor};
 use tokio_rustls::rustls::{Certificate, NoClientAuth, PrivateKey, ServerConfig};
 
+use crate::client::{Client, Message, ResponseMessage};
 use crate::connection::{Connection, ConnectionConfig};
 use crate::db::Db;
-use crate::protocol::MumblePacket;
-use crate::client::{Client, Message};
 
 pub struct Config {
     pub ip_address: IpAddr,
@@ -58,7 +54,7 @@ async fn process(db: Arc<Db>, stream: TlsStream<TcpStream>, clients: Clients) {
         max_bandwidth: 128000,
         welcome_text: "Welcome!".to_string(),
     };
-    let mut connection = match Connection::setup_connection(db.clone(), stream, connection_config).await {
+    let connection = match Connection::setup_connection(db.clone(), stream, connection_config).await {
         Ok(connection) => connection,
         Err(_) => {
             eprintln!("Error establishing a connection");
@@ -71,7 +67,7 @@ async fn process(db: Arc<Db>, stream: TlsStream<TcpStream>, clients: Clients) {
     {
         let mut clients = clients.write().await;
         for client in clients.values() {
-            client.post_message(Message::NewUser(session_id))
+            client.post_message(Message::UserConnected(session_id))
         }
         clients.insert(session_id, client);
     }
@@ -83,7 +79,14 @@ async fn process(db: Arc<Db>, stream: TlsStream<TcpStream>, clients: Clients) {
         };
 
         match message {
-            _ => {}
+            ResponseMessage::Disconnected => {
+                let mut clients = clients.write().await;
+                clients.remove(&session_id);
+                for client in clients.values() {
+                    client.post_message(Message::UserDisconnected(session_id))
+                }
+                return;
+            }
         }
     }
 }

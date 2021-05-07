@@ -1,17 +1,22 @@
 use std::sync::Arc;
 
-use tokio::io::{AsyncWrite, AsyncRead};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
+use tokio::task::JoinHandle;
 
 use crate::connection::Connection;
 use crate::db::{Db, User};
-use crate::protocol::{MumblePacket, VoicePacket, MumblePacketWriter};
-use crate::proto::mumble::{UserState, Ping};
-use tokio::task::JoinHandle;
+use crate::proto::mumble::{Ping, UserRemove, UserState};
+use crate::protocol::{MumblePacket, MumblePacketWriter, VoicePacket};
 
 pub enum Message {
-    NewUser(u32)
+    UserConnected(u32),
+    UserDisconnected(u32),
+}
+
+pub enum ResponseMessage {
+    Disconnected
 }
 
 pub struct Client {
@@ -21,42 +26,45 @@ pub struct Client {
 }
 
 pub enum Error {
-    UserNotFound,
     StreamError(crate::protocol::Error),
 }
 
 struct Handler<W> {
     db: Arc<Db>,
     writer: MumblePacketWriter<W>,
-    response_sender: UnboundedSender<Message>,
+    session_id: u32,
+    response_sender: UnboundedSender<ResponseMessage>,
 }
 
 enum InnerMessage {
     Message(Message),
     Packet(MumblePacket),
+    Disconnected,
 }
 
-type ResponseReceiver = UnboundedReceiver<Message>;
+type ResponseReceiver = UnboundedReceiver<ResponseMessage>;
 
 impl Client {
     pub async fn new<S>(connection: Connection<S>, db: Arc<Db>) -> (Client, ResponseReceiver)
-    where
-        S: 'static + AsyncRead + AsyncWrite + Unpin + Send,
+        where
+            S: 'static + AsyncRead + AsyncWrite + Unpin + Send,
     {
         let (sender, mut receiver) = mpsc::unbounded_channel();
         let (response_sender, response_receiver) = mpsc::unbounded_channel();
 
         let writer = connection.writer;
+        let session_id = connection.session_id;
         let handler_task = tokio::spawn(async move {
             let mut handler = Handler {
                 db,
                 writer,
+                session_id,
                 response_sender,
             };
             loop {
                 let message = match receiver.recv().await {
-                    None => return,
                     Some(msg) => msg,
+                    None => return,
                 };
 
                 match message {
@@ -72,6 +80,10 @@ impl Client {
                             return;
                         }
                     }
+                    InnerMessage::Disconnected => {
+                        handler.self_disconnected().await;
+                        return;
+                    }
                 }
             }
         });
@@ -80,12 +92,13 @@ impl Client {
         let mut reader = connection.reader;
         let packet_task = tokio::spawn(async move {
             loop {
-                let packet = match reader.read().await{
-                    Ok(packet) => packet,
-                    Err(_) => return, //TODO
+                match reader.read().await {
+                    Ok(packet) => sender.send(InnerMessage::Packet(packet)),
+                    Err(_) => {
+                        sender.send(InnerMessage::Disconnected);
+                        return;
+                    }
                 };
-
-                sender.send(InnerMessage::Packet(packet));
             }
         });
 
@@ -124,7 +137,7 @@ impl<W> Handler<W>
             MumblePacket::UdpTunnel(voice) => {
                 match voice {
                     VoicePacket::Ping(_) => {
-                        self.writer.write(MumblePacket::UdpTunnel(voice));
+                        self.writer.write(MumblePacket::UdpTunnel(voice)).await;
                         println!("VoicePing");
                     }
                     VoicePacket::AudioData(_) => { println!("AudioData"); }
@@ -137,7 +150,8 @@ impl<W> Handler<W>
 
     async fn handle_message(&mut self, message: Message) -> Result<(), Error> {
         match message {
-            Message::NewUser(session_id) => self.new_user_connected(session_id).await?,
+            Message::UserConnected(session_id) => self.new_user_connected(session_id).await?,
+            Message::UserDisconnected(session_id) => self.user_disconnected(session_id).await?,
         }
 
         Ok(())
@@ -148,6 +162,17 @@ impl<W> Handler<W>
             self.writer.write(MumblePacket::from(user)).await?;
         }
         Ok(())
+    }
+
+    async fn user_disconnected(&mut self, session_id: u32) -> Result<(), Error> {
+        let mut user_remove = UserRemove::new();
+        user_remove.set_session(session_id);
+        Ok(self.writer.write(MumblePacket::UserRemove(user_remove)).await?)
+    }
+
+    async fn self_disconnected(&mut self) {
+        self.db.remove_connected_user(self.session_id).await;
+        self.response_sender.send(ResponseMessage::Disconnected);
     }
 }
 

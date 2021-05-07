@@ -73,7 +73,7 @@ pub enum VoicePacket {
 
 pub enum Error {
     UnknownPacketType,
-    ConnectionError,
+    ConnectionError(std::io::Error),
     ParsingError,
 }
 
@@ -442,17 +442,14 @@ fn serialize_voice_packet(packet: VoicePacket) -> Vec<u8> {
 }
 
 impl From<std::io::Error> for Error {
-    fn from(_: std::io::Error) -> Self {
-        Error::ConnectionError
+    fn from(err: std::io::Error) -> Self {
+        Error::ConnectionError(err)
     }
 }
 
 impl From<ProtobufError> for Error {
-    fn from(error: ProtobufError) -> Self {
-        match error {
-            ProtobufError::IoError(_) | ProtobufError::WireError(_) => Error::ConnectionError,
-            ProtobufError::Utf8(_) | ProtobufError::MessageNotInitialized { .. } => Error::ParsingError
-        }
+    fn from(_: ProtobufError) -> Self {
+        Error::ParsingError
     }
 }
 
