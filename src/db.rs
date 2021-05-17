@@ -16,6 +16,7 @@ pub struct Db {
     connected_users: RwLock<HashMap<SessionId, User>>,
 }
 
+#[derive(Clone)]
 pub struct User {
     pub id: Option<u32>,
     pub username: String,
@@ -94,16 +95,5 @@ impl Db {
     pub async fn remove_connected_user(&self, session_id: u32) {
         let mut connected_users = self.connected_users.write().await;
         connected_users.remove(&session_id);
-    }
-}
-
-impl Clone for User {
-    fn clone(&self) -> Self {
-        User {
-            id: self.id,
-            username: self.username.clone(),
-            channel_id: self.channel_id,
-            session_id: self.session_id,
-        }
     }
 }
