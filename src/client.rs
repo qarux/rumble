@@ -8,18 +8,21 @@ use tokio::task::JoinHandle;
 use crate::connection::Connection;
 use crate::db::{Db, User};
 use crate::proto::mumble::{Ping, UserRemove, UserState};
-use crate::protocol::{MumblePacket, MumblePacketWriter, VoicePacket};
+use crate::protocol::{MumblePacket, MumblePacketWriter, VoicePacket, AudioData};
 
 pub enum Message {
     UserConnected(u32),
     UserDisconnected(u32),
+    UserTalking(AudioData),
 }
 
 pub enum ResponseMessage {
-    Disconnected
+    Disconnected,
+    Talking(AudioData),
 }
 
 pub struct Client {
+    pub session_id: u32,
     inner_sender: UnboundedSender<InnerMessage>,
     handler_task: JoinHandle<()>,
     packet_task: JoinHandle<()>,
@@ -103,6 +106,7 @@ impl Client {
         });
 
         return (Client {
+            session_id,
             inner_sender,
             handler_task,
             packet_task,
@@ -138,9 +142,11 @@ impl<W> Handler<W>
                 match voice {
                     VoicePacket::Ping(_) => {
                         self.writer.write(MumblePacket::UdpTunnel(voice)).await;
-                        println!("VoicePing");
                     }
-                    VoicePacket::AudioData(_) => { println!("AudioData"); }
+                    VoicePacket::AudioData(mut audio_data) => {
+                        audio_data.session_id = Some(self.session_id);
+                        self.response_sender.send(ResponseMessage::Talking(audio_data));
+                    }
                 }
             }
             _ => println!("unimplemented!")
@@ -152,6 +158,7 @@ impl<W> Handler<W>
         match message {
             Message::UserConnected(session_id) => self.new_user_connected(session_id).await?,
             Message::UserDisconnected(session_id) => self.user_disconnected(session_id).await?,
+            Message::UserTalking(audio_data) => self.user_talking(audio_data).await?,
         }
 
         Ok(())
@@ -173,6 +180,10 @@ impl<W> Handler<W>
     async fn self_disconnected(&mut self) {
         self.db.remove_connected_user(self.session_id).await;
         self.response_sender.send(ResponseMessage::Disconnected);
+    }
+
+    async fn user_talking(&mut self, audio_data: AudioData) -> Result<(), Error> {
+        Ok(self.writer.write(MumblePacket::UdpTunnel(VoicePacket::AudioData(audio_data))).await?)
     }
 }
 

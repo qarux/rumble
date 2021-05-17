@@ -87,6 +87,12 @@ async fn process(db: Arc<Db>, stream: TlsStream<TcpStream>, clients: Clients) {
                 }
                 return;
             }
+            ResponseMessage::Talking(audio_data) => {
+                let clients = clients.read().await;
+                for client in clients.values().filter(|client| client.session_id != session_id) {
+                    client.post_message(Message::UserTalking(audio_data.clone()));
+                }
+            }
         }
     }
 }
