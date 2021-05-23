@@ -11,6 +11,7 @@ mod protocol;
 mod connection;
 mod db;
 mod client;
+mod crypto;
 
 fn main() {
     let matches = App::new("Rumble")
