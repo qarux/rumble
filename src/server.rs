@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
-use tokio_rustls::{server::TlsStream, TlsAcceptor};
 use tokio_rustls::rustls::{Certificate, NoClientAuth, PrivateKey, ServerConfig};
+use tokio_rustls::{server::TlsStream, TlsAcceptor};
 
 use crate::client::{Client, Message, ResponseMessage};
 use crate::connection::{Connection, ConnectionConfig};
@@ -25,13 +25,12 @@ pub async fn run(config: Config) -> std::io::Result<()> {
     let db = Arc::new(Db::open(&config.path_to_db_file));
 
     let mut tls_config = ServerConfig::new(NoClientAuth::new());
-    tls_config.set_single_cert(vec![config.certificate], config.private_key)
+    tls_config
+        .set_single_cert(vec![config.certificate], config.private_key)
         .expect("Invalid private key");
 
     let acceptor = TlsAcceptor::from(Arc::new(tls_config));
-    let listener = TcpListener::bind(
-        SocketAddr::new(config.ip_address, config.port)
-    ).await?;
+    let listener = TcpListener::bind(SocketAddr::new(config.ip_address, config.port)).await?;
 
     let clients = Arc::new(RwLock::new(HashMap::new()));
     loop {
@@ -54,7 +53,8 @@ async fn process(db: Arc<Db>, stream: TlsStream<TcpStream>, clients: Clients) {
         max_bandwidth: 128000,
         welcome_text: "Welcome!".to_string(),
     };
-    let connection = match Connection::setup_connection(db.clone(), stream, connection_config).await {
+    let connection = match Connection::setup_connection(db.clone(), stream, connection_config).await
+    {
         Ok(connection) => connection,
         Err(_) => {
             eprintln!("Error establishing a connection");
@@ -89,13 +89,13 @@ async fn process(db: Arc<Db>, stream: TlsStream<TcpStream>, clients: Clients) {
             }
             ResponseMessage::Talking(audio_data) => {
                 let clients = clients.read().await;
-                for client in clients.values().filter(|client| client.session_id != session_id) {
+                for client in clients
+                    .values()
+                    .filter(|client| client.session_id != session_id)
+                {
                     client.post_message(Message::UserTalking(audio_data.clone()));
                 }
             }
         }
     }
 }
-
-
-

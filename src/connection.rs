@@ -3,8 +3,12 @@ use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
 
 use crate::db::Db;
-use crate::proto::mumble::{ChannelState, CodecVersion, PermissionQuery, ServerConfig, ServerSync, UserState, Version};
-use crate::protocol::{MUMBLE_PROTOCOL_VERSION, MumblePacket, MumblePacketReader, MumblePacketWriter};
+use crate::proto::mumble::{
+    ChannelState, CodecVersion, PermissionQuery, ServerConfig, ServerSync, UserState, Version,
+};
+use crate::protocol::{
+    MumblePacket, MumblePacketReader, MumblePacketWriter, MUMBLE_PROTOCOL_VERSION,
+};
 
 pub struct Connection<S> {
     pub reader: MumblePacketReader<ReadHalf<S>>,
@@ -24,16 +28,20 @@ pub enum Error {
 }
 
 impl<S> Connection<S>
-    where
-        S: AsyncRead + AsyncWrite + Unpin + Send,
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send,
 {
-    pub async fn setup_connection(db: Arc<Db>, stream: S, config: ConnectionConfig) -> Result<Connection<S>, Error> {
+    pub async fn setup_connection(
+        db: Arc<Db>,
+        stream: S,
+        config: ConnectionConfig,
+    ) -> Result<Connection<S>, Error> {
         let (mut reader, mut writer) = crate::protocol::new(stream);
 
         //Version exchange
         let _ = match reader.read().await? {
             MumblePacket::Version(version) => version,
-            _ => return Err(Error::ConnectionSetupError)
+            _ => return Err(Error::ConnectionSetupError),
         };
         let mut version = Version::new();
         version.set_version(MUMBLE_PROTOCOL_VERSION);
@@ -42,7 +50,7 @@ impl<S> Connection<S>
         //Authentication
         let mut auth = match reader.read().await? {
             MumblePacket::Authenticate(auth) => auth,
-            _ => return Err(Error::ConnectionSetupError)
+            _ => return Err(Error::ConnectionSetupError),
         };
         if !auth.has_username() {
             return Err(Error::AuthenticationError);
@@ -57,7 +65,9 @@ impl<S> Connection<S>
         codec_version.set_beta(0);
         codec_version.set_prefer_alpha(true);
         codec_version.set_opus(true);
-        writer.write(MumblePacket::CodecVersion(codec_version)).await?;
+        writer
+            .write(MumblePacket::CodecVersion(codec_version))
+            .await?;
 
         //Channel state
         let channels = db.get_channels().await;
@@ -65,14 +75,18 @@ impl<S> Connection<S>
             let mut channel_state = ChannelState::new();
             channel_state.set_channel_id(channel.id);
             channel_state.set_name(channel.name);
-            writer.write(MumblePacket::ChannelState(channel_state)).await?;
+            writer
+                .write(MumblePacket::ChannelState(channel_state))
+                .await?;
         }
 
         //PermissionQuery
         let mut permission_query = PermissionQuery::new();
         permission_query.set_permissions(134743822);
         permission_query.set_channel_id(0);
-        writer.write(MumblePacket::PermissionQuery(permission_query)).await?;
+        writer
+            .write(MumblePacket::PermissionQuery(permission_query))
+            .await?;
 
         //User states
         let connected_users = db.get_connected_users().await;
@@ -98,7 +112,9 @@ impl<S> Connection<S>
         server_config.set_allow_html(true);
         server_config.set_message_length(5000);
         server_config.set_image_message_length(131072);
-        writer.write(MumblePacket::ServerConfig(server_config)).await?;
+        writer
+            .write(MumblePacket::ServerConfig(server_config))
+            .await?;
 
         Ok(Connection {
             reader,

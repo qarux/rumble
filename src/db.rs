@@ -46,11 +46,14 @@ impl Db {
         let root_channel = bincode::serialize(&Channel {
             id: 0,
             name: "Root".to_string(),
-        }).unwrap();
-        channels.compare_and_swap(
-            ROOT_CHANNEL_ID.to_be_bytes(),
-            Option::<&[u8]>::None,
-            Some(root_channel))
+        })
+        .unwrap();
+        channels
+            .compare_and_swap(
+                ROOT_CHANNEL_ID.to_be_bytes(),
+                Option::<&[u8]>::None,
+                Some(root_channel),
+            )
             .unwrap();
 
         Db {
@@ -64,17 +67,22 @@ impl Db {
     pub async fn add_new_user(&self, username: String) -> u32 {
         let mut connected_users = self.connected_users.write().await;
         let session_id = connected_users.len() as u32;
-        connected_users.insert(session_id, User {
-            id: None,
-            username,
-            channel_id: ROOT_CHANNEL_ID,
+        connected_users.insert(
             session_id,
-        });
+            User {
+                id: None,
+                username,
+                channel_id: ROOT_CHANNEL_ID,
+                session_id,
+            },
+        );
         session_id
     }
 
     pub async fn get_channels(&self) -> Vec<Channel> {
-        self.channels.iter().values()
+        self.channels
+            .iter()
+            .values()
             .map(|channel| bincode::deserialize(&channel.unwrap()).unwrap())
             .collect()
     }

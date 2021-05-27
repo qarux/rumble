@@ -8,7 +8,7 @@ use tokio::task::JoinHandle;
 use crate::connection::Connection;
 use crate::db::{Db, User};
 use crate::proto::mumble::{Ping, UserRemove, UserState};
-use crate::protocol::{MumblePacket, MumblePacketWriter, VoicePacket, AudioData};
+use crate::protocol::{AudioData, MumblePacket, MumblePacketWriter, VoicePacket};
 
 pub enum Message {
     UserConnected(u32),
@@ -49,8 +49,8 @@ type ResponseReceiver = UnboundedReceiver<ResponseMessage>;
 
 impl Client {
     pub async fn new<S>(connection: Connection<S>, db: Arc<Db>) -> (Client, ResponseReceiver)
-        where
-            S: 'static + AsyncRead + AsyncWrite + Unpin + Send,
+    where
+        S: 'static + AsyncRead + AsyncWrite + Unpin + Send,
     {
         let (sender, mut receiver) = mpsc::unbounded_channel();
         let (response_sender, response_receiver) = mpsc::unbounded_channel();
@@ -105,12 +105,15 @@ impl Client {
             }
         });
 
-        return (Client {
-            session_id,
-            inner_sender,
-            handler_task,
-            packet_task,
-        }, response_receiver);
+        return (
+            Client {
+                session_id,
+                inner_sender,
+                handler_task,
+                packet_task,
+            },
+            response_receiver,
+        );
     }
 
     pub fn post_message(&self, message: Message) {
@@ -126,8 +129,8 @@ impl Drop for Client {
 }
 
 impl<W> Handler<W>
-    where
-        W: AsyncWrite + Unpin + Send,
+where
+    W: AsyncWrite + Unpin + Send,
 {
     async fn handle_packet(&mut self, packet: MumblePacket) -> Result<(), Error> {
         match packet {
@@ -138,18 +141,17 @@ impl<W> Handler<W>
                     self.writer.write(MumblePacket::Ping(ping)).await?;
                 }
             }
-            MumblePacket::UdpTunnel(voice) => {
-                match voice {
-                    VoicePacket::Ping(_) => {
-                        self.writer.write(MumblePacket::UdpTunnel(voice)).await;
-                    }
-                    VoicePacket::AudioData(mut audio_data) => {
-                        audio_data.session_id = Some(self.session_id);
-                        self.response_sender.send(ResponseMessage::Talking(audio_data));
-                    }
+            MumblePacket::UdpTunnel(voice) => match voice {
+                VoicePacket::Ping(_) => {
+                    self.writer.write(MumblePacket::UdpTunnel(voice)).await;
                 }
-            }
-            _ => println!("unimplemented!")
+                VoicePacket::AudioData(mut audio_data) => {
+                    audio_data.session_id = Some(self.session_id);
+                    self.response_sender
+                        .send(ResponseMessage::Talking(audio_data));
+                }
+            },
+            _ => println!("unimplemented!"),
         }
         Ok(())
     }
@@ -174,7 +176,10 @@ impl<W> Handler<W>
     async fn user_disconnected(&mut self, session_id: u32) -> Result<(), Error> {
         let mut user_remove = UserRemove::new();
         user_remove.set_session(session_id);
-        Ok(self.writer.write(MumblePacket::UserRemove(user_remove)).await?)
+        Ok(self
+            .writer
+            .write(MumblePacket::UserRemove(user_remove))
+            .await?)
     }
 
     async fn self_disconnected(&mut self) {
@@ -183,7 +188,10 @@ impl<W> Handler<W>
     }
 
     async fn user_talking(&mut self, audio_data: AudioData) -> Result<(), Error> {
-        Ok(self.writer.write(MumblePacket::UdpTunnel(VoicePacket::AudioData(audio_data))).await?)
+        Ok(self
+            .writer
+            .write(MumblePacket::UdpTunnel(VoicePacket::AudioData(audio_data)))
+            .await?)
     }
 }
 
@@ -211,4 +219,3 @@ impl From<crate::protocol::Error> for Error {
         Error::StreamError(err)
     }
 }
-
