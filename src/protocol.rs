@@ -1,5 +1,4 @@
 use protobuf::{Message, ProtobufError};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
 
 use crate::proto::mumble::{
     Authenticate, BanList, ChannelRemove, ChannelState, CodecVersion, ContextAction,
@@ -36,7 +35,9 @@ const USER_STATS: u16 = 22;
 const REQUEST_BLOB: u16 = 23;
 const SERVER_CONFIG: u16 = 24;
 const SUGGEST_CONFIG: u16 = 25;
-const MAX_AUDIO_PACKET_SIZE: usize = 1020;
+
+const TYPE_SIZE: usize = 2;
+const LENGTH_SIZE: usize = 4;
 
 pub enum MumblePacket {
     Version(Version),
@@ -74,16 +75,7 @@ pub enum VoicePacket {
 
 pub enum Error {
     UnknownPacketType,
-    ConnectionError(std::io::Error),
     ParsingError,
-}
-
-pub struct MumblePacketReader<R> {
-    reader: R,
-}
-
-pub struct MumblePacketWriter<W> {
-    writer: W,
 }
 
 pub struct VoicePing {
@@ -96,100 +88,75 @@ pub struct AudioData {
     bytes: Vec<u8>,
 }
 
-pub fn new<S>(
-    stream: S,
-) -> (
-    MumblePacketReader<ReadHalf<S>>,
-    MumblePacketWriter<WriteHalf<S>>,
-)
-where
-    S: AsyncRead + AsyncWrite + Unpin + Send,
-{
-    let (reader, writer) = tokio::io::split(stream);
-    (
-        MumblePacketReader::new(reader),
-        MumblePacketWriter::new(writer),
-    )
-}
-
-impl<R> MumblePacketReader<R>
-where
-    R: AsyncRead + Unpin + Send,
-{
-    pub fn new(reader: R) -> Self {
-        MumblePacketReader { reader }
+impl MumblePacket {
+    pub fn parse_prefix(packet_type: [u8; TYPE_SIZE], length: [u8; LENGTH_SIZE]) -> (u16, u32) {
+        (u16::from_be_bytes(packet_type), u32::from_be_bytes(length))
     }
 
-    pub async fn read(&mut self) -> Result<MumblePacket, Error> {
-        let packet_type = self.reader.read_u16().await?;
-        let payload_length = self.reader.read_u32().await?;
-        let payload = self.read_payload(payload_length).await?;
-
+    pub fn parse_payload(packet_type: u16, payload: &[u8]) -> Result<Self, Error> {
         match packet_type {
-            VERSION => Ok(MumblePacket::Version(Version::parse_from_bytes(&payload)?)),
-            UDP_TUNNEL => Ok(MumblePacket::UdpTunnel(VoicePacket::parse_from_bytes(
-                payload,
+            VERSION => Ok(MumblePacket::Version(Version::parse_from_bytes(payload)?)),
+            UDP_TUNNEL => Ok(MumblePacket::UdpTunnel(VoicePacket::parse(
+                payload.to_vec(),
             )?)),
             AUTHENTICATE => Ok(MumblePacket::Authenticate(Authenticate::parse_from_bytes(
-                &payload,
+                payload,
             )?)),
-            PING => Ok(MumblePacket::Ping(Ping::parse_from_bytes(&payload)?)),
-            REJECT => Ok(MumblePacket::Reject(Reject::parse_from_bytes(&payload)?)),
+            PING => Ok(MumblePacket::Ping(Ping::parse_from_bytes(payload)?)),
+            REJECT => Ok(MumblePacket::Reject(Reject::parse_from_bytes(payload)?)),
             SERVER_SYNC => Ok(MumblePacket::ServerSync(ServerSync::parse_from_bytes(
-                &payload,
+                payload,
             )?)),
             CHANNEL_REMOVE => Ok(MumblePacket::ChannelRemove(
-                ChannelRemove::parse_from_bytes(&payload)?,
+                ChannelRemove::parse_from_bytes(payload)?,
             )),
             CHANNEL_STATE => Ok(MumblePacket::ChannelState(ChannelState::parse_from_bytes(
-                &payload,
+                payload,
             )?)),
             USER_REMOVE => Ok(MumblePacket::UserRemove(UserRemove::parse_from_bytes(
-                &payload,
+                payload,
             )?)),
             USER_STATE => Ok(MumblePacket::UserState(UserState::parse_from_bytes(
-                &payload,
+                payload,
             )?)),
-            BAN_LIST => Ok(MumblePacket::BanList(BanList::parse_from_bytes(&payload)?)),
+            BAN_LIST => Ok(MumblePacket::BanList(BanList::parse_from_bytes(payload)?)),
             TEXT_MESSAGE => Ok(MumblePacket::TextMessage(TextMessage::parse_from_bytes(
-                &payload,
+                payload,
             )?)),
             PERMISSION_DENIED => Ok(MumblePacket::PermissionDenied(
-                PermissionDenied::parse_from_bytes(&payload)?,
+                PermissionDenied::parse_from_bytes(payload)?,
             )),
-            ACL => Ok(MumblePacket::Acl(Acl::parse_from_bytes(&payload)?)),
+            ACL => Ok(MumblePacket::Acl(Acl::parse_from_bytes(payload)?)),
             QUERY_USERS => Ok(MumblePacket::QueryUsers(QueryUsers::parse_from_bytes(
-                &payload,
+                payload,
             )?)),
             CRYPT_SETUP => Ok(MumblePacket::CryptSetup(CryptSetup::parse_from_bytes(
-                &payload,
+                payload,
             )?)),
             CONTEXT_ACTION_MODIFY => Ok(MumblePacket::ContextActionModify(
-                ContextActionModify::parse_from_bytes(&payload)?,
+                ContextActionModify::parse_from_bytes(payload)?,
             )),
             CONTEXT_ACTION => Ok(MumblePacket::ContextAction(
-                ContextAction::parse_from_bytes(&payload)?,
+                ContextAction::parse_from_bytes(payload)?,
             )),
-            USER_LIST => Ok(MumblePacket::UserList(UserList::parse_from_bytes(
-                &payload,
-            )?)),
+            USER_LIST => Ok(MumblePacket::UserList(UserList::parse_from_bytes(payload)?)),
             VOICE_TARGET => Ok(MumblePacket::VoiceTarget(VoiceTarget::parse_from_bytes(
-                &payload,
+                payload,
             )?)),
             PERMISSION_QUERY => Ok(MumblePacket::PermissionQuery(
-                PermissionQuery::parse_from_bytes(&payload)?,
+                PermissionQuery::parse_from_bytes(payload)?,
             )),
             CODEC_VERSION => Ok(MumblePacket::CodecVersion(CodecVersion::parse_from_bytes(
-                &payload,
+                payload,
             )?)),
             USER_STATS => Ok(MumblePacket::UserStats(UserStats::parse_from_bytes(
-                &payload,
+                payload,
             )?)),
             REQUEST_BLOB => Ok(MumblePacket::RequestBlob(RequestBlob::parse_from_bytes(
-                &payload,
+                payload,
             )?)),
             SERVER_CONFIG => Ok(MumblePacket::ServerConfig(ServerConfig::parse_from_bytes(
-                &payload,
+                payload,
             )?)),
             SUGGEST_CONFIG => Ok(MumblePacket::SuggestConfig(
                 SuggestConfig::parse_from_bytes(&payload)?,
@@ -198,156 +165,95 @@ where
         }
     }
 
-    async fn read_varint(&mut self) -> Result<u64, Error> {
-        //TODO negative number decode
-        let header = self.reader.read_u8().await?;
-
-        //7-bit number
-        if (header & 0b1000_0000) == 0b0000_0000 {
-            return Ok(header as u64);
-        }
-        //14-bit number
-        if (header & 0b1100_0000) == 0b1000_0000 {
-            let first_number_byte = header ^ 0b1000_0000;
-            return Ok(((first_number_byte as u64) << 8) | (self.reader.read_u8().await? as u64));
-        }
-        //21-bit number
-        if (header & 0b1110_0000) == 0b1100_0000 {
-            let first_number_byte = header ^ 0b1100_0000;
-            return Ok(((first_number_byte as u64) << 16)
-                | ((self.reader.read_u8().await? as u64) << 8)
-                | (self.reader.read_u8().await? as u64));
-        }
-        //28-bit number
-        if (header & 0b1111_0000) == 0b1110_0000 {
-            let first_number_byte = header ^ 0b1110_0000;
-            return Ok(((first_number_byte as u64) << 24)
-                | ((self.reader.read_u8().await? as u64) << 16)
-                | ((self.reader.read_u8().await? as u64) << 8)
-                | (self.reader.read_u8().await? as u64));
-        }
-        //32-bit number
-        if (header & 0b1111_1100) == 0b1111_0000 {
-            return Ok(self.reader.read_u32().await? as u64);
-        }
-        //64-bit number
-        if (header & 0b1111_1100) == 0b1111_0100 {
-            return Ok(self.reader.read_u64().await?);
-        }
-
-        Err(Error::ParsingError)
-    }
-
-    async fn read_payload(&mut self, payload_length: u32) -> tokio::io::Result<Vec<u8>> {
-        let mut payload = vec![0; payload_length as usize];
-        self.reader.read_exact(&mut payload).await?;
-        Ok(payload)
-    }
-}
-
-impl<W> MumblePacketWriter<W>
-where
-    W: AsyncWrite + Unpin + Send,
-{
-    pub fn new(writer: W) -> Self {
-        MumblePacketWriter { writer }
-    }
-
-    pub async fn write(&mut self, packet: MumblePacket) -> Result<(), Error> {
-        match packet {
-            MumblePacket::UdpTunnel(value) => {
-                let bytes = serialize_voice_packet(value);
-                self.writer.write_u16(UDP_TUNNEL).await?;
-                self.writer.write_u32(bytes.len() as u32).await?;
-                self.writer.write_all(&bytes).await?;
+    pub fn serialize(self) -> Vec<u8> {
+        match self {
+            MumblePacket::UdpTunnel(voice_packet) => {
+                let bytes = voice_packet.serialize();
+                return UDP_TUNNEL
+                    .to_be_bytes()
+                    .iter()
+                    .cloned()
+                    .chain((bytes.len() as u32).to_be_bytes().iter().cloned())
+                    .chain(bytes)
+                    .collect();
             }
-            MumblePacket::Version(value) => self.write_protobuf_packet(value, VERSION).await?,
+            MumblePacket::Version(value) => Self::serialize_protobuf_packet(&value, VERSION),
             MumblePacket::Authenticate(value) => {
-                self.write_protobuf_packet(value, AUTHENTICATE).await?
+                Self::serialize_protobuf_packet(&value, AUTHENTICATE)
             }
-            MumblePacket::Ping(value) => self.write_protobuf_packet(value, PING).await?,
-            MumblePacket::Reject(value) => self.write_protobuf_packet(value, REJECT).await?,
-            MumblePacket::ServerSync(value) => {
-                self.write_protobuf_packet(value, SERVER_SYNC).await?
-            }
+            MumblePacket::Ping(value) => Self::serialize_protobuf_packet(&value, PING),
+            MumblePacket::Reject(value) => Self::serialize_protobuf_packet(&value, REJECT),
+            MumblePacket::ServerSync(value) => Self::serialize_protobuf_packet(&value, SERVER_SYNC),
             MumblePacket::ChannelRemove(value) => {
-                self.write_protobuf_packet(value, CHANNEL_REMOVE).await?
+                Self::serialize_protobuf_packet(&value, CHANNEL_REMOVE)
             }
             MumblePacket::ChannelState(value) => {
-                self.write_protobuf_packet(value, CHANNEL_STATE).await?
+                Self::serialize_protobuf_packet(&value, CHANNEL_STATE)
             }
-            MumblePacket::UserRemove(value) => {
-                self.write_protobuf_packet(value, USER_REMOVE).await?
-            }
-            MumblePacket::UserState(value) => self.write_protobuf_packet(value, USER_STATE).await?,
-            MumblePacket::BanList(value) => self.write_protobuf_packet(value, BAN_LIST).await?,
+            MumblePacket::UserRemove(value) => Self::serialize_protobuf_packet(&value, USER_REMOVE),
+            MumblePacket::UserState(value) => Self::serialize_protobuf_packet(&value, USER_STATE),
+            MumblePacket::BanList(value) => Self::serialize_protobuf_packet(&value, BAN_LIST),
             MumblePacket::TextMessage(value) => {
-                self.write_protobuf_packet(value, TEXT_MESSAGE).await?
+                Self::serialize_protobuf_packet(&value, TEXT_MESSAGE)
             }
             MumblePacket::PermissionDenied(value) => {
-                self.write_protobuf_packet(value, PERMISSION_DENIED).await?
+                Self::serialize_protobuf_packet(&value, PERMISSION_DENIED)
             }
-            MumblePacket::Acl(value) => self.write_protobuf_packet(value, ACL).await?,
-            MumblePacket::QueryUsers(value) => {
-                self.write_protobuf_packet(value, QUERY_USERS).await?
-            }
-            MumblePacket::CryptSetup(value) => {
-                self.write_protobuf_packet(value, CRYPT_SETUP).await?
-            }
+            MumblePacket::Acl(value) => Self::serialize_protobuf_packet(&value, ACL),
+            MumblePacket::QueryUsers(value) => Self::serialize_protobuf_packet(&value, QUERY_USERS),
+            MumblePacket::CryptSetup(value) => Self::serialize_protobuf_packet(&value, CRYPT_SETUP),
             MumblePacket::ContextActionModify(value) => {
-                self.write_protobuf_packet(value, CONTEXT_ACTION_MODIFY)
-                    .await?
+                Self::serialize_protobuf_packet(&value, CONTEXT_ACTION_MODIFY)
             }
             MumblePacket::ContextAction(value) => {
-                self.write_protobuf_packet(value, CONTEXT_ACTION).await?
+                Self::serialize_protobuf_packet(&value, CONTEXT_ACTION)
             }
-            MumblePacket::UserList(value) => self.write_protobuf_packet(value, USER_LIST).await?,
+            MumblePacket::UserList(value) => Self::serialize_protobuf_packet(&value, USER_LIST),
             MumblePacket::VoiceTarget(value) => {
-                self.write_protobuf_packet(value, VOICE_TARGET).await?
+                Self::serialize_protobuf_packet(&value, VOICE_TARGET)
             }
             MumblePacket::PermissionQuery(value) => {
-                self.write_protobuf_packet(value, PERMISSION_QUERY).await?
+                Self::serialize_protobuf_packet(&value, PERMISSION_QUERY)
             }
             MumblePacket::CodecVersion(value) => {
-                self.write_protobuf_packet(value, CODEC_VERSION).await?
+                Self::serialize_protobuf_packet(&value, CODEC_VERSION)
             }
-            MumblePacket::UserStats(value) => self.write_protobuf_packet(value, USER_STATS).await?,
+            MumblePacket::UserStats(value) => Self::serialize_protobuf_packet(&value, USER_STATS),
             MumblePacket::RequestBlob(value) => {
-                self.write_protobuf_packet(value, REQUEST_BLOB).await?
+                Self::serialize_protobuf_packet(&value, REQUEST_BLOB)
             }
             MumblePacket::ServerConfig(value) => {
-                self.write_protobuf_packet(value, SERVER_CONFIG).await?
+                Self::serialize_protobuf_packet(&value, SERVER_CONFIG)
             }
             MumblePacket::SuggestConfig(value) => {
-                self.write_protobuf_packet(value, SUGGEST_CONFIG).await?
+                Self::serialize_protobuf_packet(&value, SUGGEST_CONFIG)
             }
         }
-
-        self.writer.flush().await?;
-        Ok(())
     }
 
-    async fn write_protobuf_packet<T>(&mut self, packet: T, packet_type: u16) -> Result<(), Error>
+    fn serialize_protobuf_packet<T>(packet: &T, packet_type: u16) -> Vec<u8>
     where
         T: Message,
     {
-        let bytes = packet.write_to_bytes()?;
-        self.writer.write_u16(packet_type).await?;
-        self.writer.write_u32(bytes.len() as u32).await?;
-        self.writer.write_all(&bytes).await?;
-
-        Ok(())
+        let bytes = packet.write_to_bytes().unwrap();
+        return packet_type
+            .to_be_bytes()
+            .iter()
+            .cloned()
+            .chain((bytes.len() as u32).to_be_bytes().iter().cloned())
+            .chain(bytes)
+            .collect();
     }
 }
 
 impl VoicePacket {
-    fn parse_from_bytes(bytes: Vec<u8>) -> Result<VoicePacket, Error> {
+    pub fn parse(bytes: Vec<u8>) -> Result<Self, Error> {
         if bytes.is_empty() {
             return Err(Error::ParsingError);
         }
 
         let header = bytes.first().unwrap();
-        let (packet_type, _) = decode_header(header.clone());
+        let (packet_type, _) = decode_header(*header);
         if packet_type == 1 {
             return Ok(VoicePacket::Ping(VoicePing { bytes }));
         }
@@ -357,6 +263,23 @@ impl VoicePacket {
             bytes,
         }))
     }
+
+    pub fn serialize(self) -> Vec<u8> {
+        match self {
+            VoicePacket::Ping(ping) => ping.bytes,
+            VoicePacket::AudioData(audio_data) => {
+                if let Some(session_id) = audio_data.session_id {
+                    let mut bytes = audio_data.bytes;
+                    let varint = encode_varint(session_id as u64);
+                    return std::iter::once(bytes.remove(0))
+                        .chain(varint)
+                        .chain(bytes)
+                        .collect();
+                }
+                audio_data.bytes
+            }
+        }
+    }
 }
 
 fn decode_header(header: u8) -> (u8, u8) {
@@ -365,12 +288,7 @@ fn decode_header(header: u8) -> (u8, u8) {
     (packet_type, target)
 }
 
-fn encode_header(packet_type: u8, target: u8) -> u8 {
-    (packet_type << 5) | target
-}
-
 fn encode_varint(number: u64) -> Vec<u8> {
-    //TODO negative number encode
     let mut result = vec![];
 
     if number < 0x80 {
@@ -414,31 +332,6 @@ fn encode_varint(number: u64) -> Vec<u8> {
     result
 }
 
-fn serialize_voice_packet(packet: VoicePacket) -> Vec<u8> {
-    match packet {
-        VoicePacket::Ping(ping) => ping.bytes,
-        VoicePacket::AudioData(audio_data) => {
-            if let Some(session_id) = audio_data.session_id {
-                let mut bytes = audio_data.bytes;
-                let mut varint = encode_varint(session_id as u64);
-                let mut result = Vec::with_capacity(bytes.len() + varint.len());
-                let header = bytes.remove(0);
-                result.push(header);
-                result.append(&mut varint);
-                result.append(&mut bytes);
-                return result;
-            }
-            audio_data.bytes
-        }
-    }
-}
-
-impl From<std::io::Error> for Error {
-    fn from(err: std::io::Error) -> Self {
-        Error::ConnectionError(err)
-    }
-}
-
 impl From<ProtobufError> for Error {
     fn from(_: ProtobufError) -> Self {
         Error::ParsingError
@@ -447,8 +340,6 @@ impl From<ProtobufError> for Error {
 
 #[cfg(test)]
 mod tests {
-    use tokio::net::TcpStream;
-
     use super::*;
 
     #[test]
@@ -456,13 +347,6 @@ mod tests {
         assert_eq!(decode_header(0b0100_1000), (2, 8));
         assert_eq!(decode_header(0b0111_1111), (3, 31));
         assert_eq!(decode_header(0b1000_0000), (4, 0));
-    }
-
-    #[test]
-    fn test_encode_header() {
-        assert_eq!(encode_header(2, 8), 0b0100_1000);
-        assert_eq!(encode_header(3, 31), 0b0111_1111);
-        assert_eq!(encode_header(4, 0), 0b1000_0000);
     }
 
     #[test]

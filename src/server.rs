@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::RwLock;
 use tokio_rustls::rustls::{Certificate, NoClientAuth, PrivateKey, ServerConfig};
-use tokio_rustls::{server::TlsStream, TlsAcceptor};
+use tokio_rustls::{TlsAcceptor, TlsStream};
 
 use crate::client::{Client, Message, ResponseMessage};
 use crate::connection::{Connection, ConnectionConfig};
@@ -42,7 +42,7 @@ pub async fn run(config: Config) -> std::io::Result<()> {
         tokio::spawn(async move {
             let stream = acceptor.accept(stream).await;
             if let Ok(stream) = stream {
-                process(db, stream, clients).await;
+                process(db, TlsStream::from(stream), clients).await;
             }
         });
     }

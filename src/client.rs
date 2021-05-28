@@ -1,14 +1,21 @@
 use std::sync::Arc;
 
-use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 
-use crate::connection::Connection;
+use crate::connection::{Connection, ControlChannelWriter};
 use crate::db::{Db, User};
 use crate::proto::mumble::{Ping, UserRemove, UserState};
-use crate::protocol::{AudioData, MumblePacket, MumblePacketWriter, VoicePacket};
+use crate::protocol::{AudioData, MumblePacket, VoicePacket};
+use crate::client::Error::StreamError;
+
+pub struct Client {
+    pub session_id: u32,
+    inner_sender: UnboundedSender<InnerMessage>,
+    handler_task: JoinHandle<()>,
+    packet_task: JoinHandle<()>,
+}
 
 pub enum Message {
     UserConnected(u32),
@@ -21,20 +28,13 @@ pub enum ResponseMessage {
     Talking(AudioData),
 }
 
-pub struct Client {
-    pub session_id: u32,
-    inner_sender: UnboundedSender<InnerMessage>,
-    handler_task: JoinHandle<()>,
-    packet_task: JoinHandle<()>,
-}
-
 pub enum Error {
-    StreamError(crate::protocol::Error),
+    StreamError,
 }
 
-struct Handler<W> {
+struct Handler {
     db: Arc<Db>,
-    writer: MumblePacketWriter<W>,
+    writer: ControlChannelWriter,
     session_id: u32,
     response_sender: UnboundedSender<ResponseMessage>,
 }
@@ -48,14 +48,11 @@ enum InnerMessage {
 type ResponseReceiver = UnboundedReceiver<ResponseMessage>;
 
 impl Client {
-    pub async fn new<S>(connection: Connection<S>, db: Arc<Db>) -> (Client, ResponseReceiver)
-    where
-        S: 'static + AsyncRead + AsyncWrite + Unpin + Send,
-    {
+    pub async fn new(connection: Connection, db: Arc<Db>) -> (Client, ResponseReceiver) {
         let (sender, mut receiver) = mpsc::unbounded_channel();
         let (response_sender, response_receiver) = mpsc::unbounded_channel();
 
-        let writer = connection.writer;
+        let (mut reader, writer) = connection.control_channel.split();
         let session_id = connection.session_id;
         let handler_task = tokio::spawn(async move {
             let mut handler = Handler {
@@ -92,7 +89,6 @@ impl Client {
         });
 
         let inner_sender = sender.clone();
-        let mut reader = connection.reader;
         let packet_task = tokio::spawn(async move {
             loop {
                 match reader.read().await {
@@ -128,10 +124,7 @@ impl Drop for Client {
     }
 }
 
-impl<W> Handler<W>
-where
-    W: AsyncWrite + Unpin + Send,
-{
+impl Handler {
     async fn handle_packet(&mut self, packet: MumblePacket) -> Result<(), Error> {
         match packet {
             MumblePacket::Ping(ping) => {
@@ -215,7 +208,13 @@ impl From<User> for MumblePacket {
 }
 
 impl From<crate::protocol::Error> for Error {
-    fn from(err: crate::protocol::Error) -> Self {
-        Error::StreamError(err)
+    fn from(_: crate::protocol::Error) -> Self {
+        StreamError
+    }
+}
+
+impl From<crate::connection::Error> for Error {
+    fn from(_: crate::connection::Error) -> Self {
+        StreamError
     }
 }

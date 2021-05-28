@@ -1,19 +1,34 @@
 use std::sync::Arc;
 
-use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
-
 use crate::db::Db;
 use crate::proto::mumble::{
-    ChannelState, CodecVersion, PermissionQuery, ServerConfig, ServerSync, UserState, Version,
+    ChannelState, CodecVersion, CryptSetup, PermissionQuery, ServerConfig, ServerSync, UserState,
+    Version,
 };
-use crate::protocol::{
-    MumblePacket, MumblePacketReader, MumblePacketWriter, MUMBLE_PROTOCOL_VERSION,
-};
+use crate::protocol::{MumblePacket, MUMBLE_PROTOCOL_VERSION};
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 
-pub struct Connection<S> {
-    pub reader: MumblePacketReader<ReadHalf<S>>,
-    pub writer: MumblePacketWriter<WriteHalf<S>>,
+use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
+use tokio::net::TcpStream;
+use tokio_rustls::TlsStream;
+
+pub struct Connection {
+    pub control_channel: ControlChannel,
     pub session_id: u32,
+}
+
+pub struct ControlChannel {
+    reader: ControlChannelReader,
+    writer: ControlChannelWriter,
+}
+
+pub struct ControlChannelReader {
+    reader: ReadHalf<TlsStream<TcpStream>>,
+}
+
+pub struct ControlChannelWriter {
+    writer: WriteHalf<TlsStream<TcpStream>>,
 }
 
 pub struct ConnectionConfig {
@@ -24,31 +39,30 @@ pub struct ConnectionConfig {
 pub enum Error {
     ConnectionSetupError,
     AuthenticationError,
-    StreamError(crate::protocol::Error),
+    StreamError,
 }
 
-impl<S> Connection<S>
-where
-    S: AsyncRead + AsyncWrite + Unpin + Send,
-{
+impl Connection {
     pub async fn setup_connection(
         db: Arc<Db>,
-        stream: S,
+        stream: TlsStream<TcpStream>,
         config: ConnectionConfig,
-    ) -> Result<Connection<S>, Error> {
-        let (mut reader, mut writer) = crate::protocol::new(stream);
+    ) -> Result<Connection, Error> {
+        let mut control_channel = ControlChannel::new(stream);
 
         //Version exchange
-        let _ = match reader.read().await? {
+        let _ = match control_channel.read().await? {
             MumblePacket::Version(version) => version,
             _ => return Err(Error::ConnectionSetupError),
         };
         let mut version = Version::new();
         version.set_version(MUMBLE_PROTOCOL_VERSION);
-        writer.write(MumblePacket::Version(version)).await?;
+        control_channel
+            .write(MumblePacket::Version(version))
+            .await?;
 
         //Authentication
-        let mut auth = match reader.read().await? {
+        let mut auth = match control_channel.read().await? {
             MumblePacket::Authenticate(auth) => auth,
             _ => return Err(Error::ConnectionSetupError),
         };
@@ -57,7 +71,7 @@ where
         }
         let session_id = db.add_new_user(auth.take_username()).await;
 
-        //Crypt setup TODO
+        //Crypt setup
 
         //CodecVersion
         let mut codec_version = CodecVersion::new();
@@ -65,7 +79,7 @@ where
         codec_version.set_beta(0);
         codec_version.set_prefer_alpha(true);
         codec_version.set_opus(true);
-        writer
+        control_channel
             .write(MumblePacket::CodecVersion(codec_version))
             .await?;
 
@@ -75,7 +89,7 @@ where
             let mut channel_state = ChannelState::new();
             channel_state.set_channel_id(channel.id);
             channel_state.set_name(channel.name);
-            writer
+            control_channel
                 .write(MumblePacket::ChannelState(channel_state))
                 .await?;
         }
@@ -84,7 +98,7 @@ where
         let mut permission_query = PermissionQuery::new();
         permission_query.set_permissions(134743822);
         permission_query.set_channel_id(0);
-        writer
+        control_channel
             .write(MumblePacket::PermissionQuery(permission_query))
             .await?;
 
@@ -95,7 +109,9 @@ where
             user_state.set_name(user.username);
             user_state.set_session(user.session_id);
             user_state.set_channel_id(user.channel_id);
-            writer.write(MumblePacket::UserState(user_state)).await?;
+            control_channel
+                .write(MumblePacket::UserState(user_state))
+                .await?;
         }
 
         //Server sync
@@ -104,7 +120,9 @@ where
         server_sync.set_welcome_text(config.welcome_text);
         server_sync.set_max_bandwidth(config.max_bandwidth);
         server_sync.set_permissions(134743822);
-        writer.write(MumblePacket::ServerSync(server_sync)).await?;
+        control_channel
+            .write(MumblePacket::ServerSync(server_sync))
+            .await?;
 
         //ServerConfig
         let mut server_config = ServerConfig::new();
@@ -112,20 +130,70 @@ where
         server_config.set_allow_html(true);
         server_config.set_message_length(5000);
         server_config.set_image_message_length(131072);
-        writer
+        control_channel
             .write(MumblePacket::ServerConfig(server_config))
             .await?;
 
         Ok(Connection {
-            reader,
-            writer,
+            control_channel,
             session_id,
         })
     }
 }
 
+impl ControlChannel {
+    pub async fn read(&mut self) -> Result<MumblePacket, Error> {
+        self.reader.read().await
+    }
+
+    pub async fn write(&mut self, packet: MumblePacket) -> Result<(), Error> {
+        self.writer.write(packet).await
+    }
+
+    pub fn split(self) -> (ControlChannelReader, ControlChannelWriter) {
+        (self.reader, self.writer)
+    }
+
+    fn new(stream: TlsStream<TcpStream>) -> Self {
+        let (reader, writer) = tokio::io::split(stream);
+        ControlChannel {
+            reader: ControlChannelReader { reader },
+            writer: ControlChannelWriter { writer },
+        }
+    }
+}
+
+impl ControlChannelReader {
+    pub async fn read(&mut self) -> Result<MumblePacket, Error> {
+        let mut packet_type = [0; 2];
+        let mut length = [0; 4];
+        self.reader.read_exact(&mut packet_type).await?;
+        self.reader.read_exact(&mut length).await?;
+        let (packet_type, length) = MumblePacket::parse_prefix(packet_type, length);
+
+        let mut payload = vec![0; length as usize];
+        self.reader.read_exact(&mut payload).await?;
+        Ok(MumblePacket::parse_payload(packet_type, &payload)?)
+    }
+}
+
+impl ControlChannelWriter {
+    pub async fn write(&mut self, packet: MumblePacket) -> Result<(), Error> {
+        let bytes = packet.serialize();
+        self.writer.write_all(&bytes).await?;
+        self.writer.flush().await?;
+        Ok(())
+    }
+}
+
 impl From<crate::protocol::Error> for Error {
-    fn from(err: crate::protocol::Error) -> Self {
-        Error::StreamError(err)
+    fn from(_: crate::protocol::Error) -> Self {
+        Error::StreamError
+    }
+}
+
+impl From<std::io::Error> for Error {
+    fn from(_: std::io::Error) -> Self {
+        Error::StreamError
     }
 }
