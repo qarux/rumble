@@ -10,11 +10,7 @@ type Key = [u8; 16];
 type Nonce = [u8; 16];
 type Tag = [u8; 16];
 
-enum Error {
-    Fail,
-}
-
-struct CryptState {
+pub struct Ocb2Aes128Crypto {
     cipher: Aes128,
     encrypt_iv: Nonce,
     decrypt_iv: Nonce,
@@ -24,11 +20,15 @@ struct CryptState {
     lost: u32,
 }
 
+pub enum Error {
+    Fail,
+}
+
 // Based on the official Mumble project CryptState implementation
 // TODO refactor this mess
-impl CryptState {
-    pub fn new(key: Key, encrypt_iv: Nonce, decrypt_iv: Nonce) -> CryptState {
-        CryptState {
+impl Ocb2Aes128Crypto {
+    pub fn new(key: Key, encrypt_iv: Nonce, decrypt_iv: Nonce) -> Ocb2Aes128Crypto {
+        Ocb2Aes128Crypto {
             cipher: Aes128::new(&GenericArray::from(key)),
             encrypt_iv,
             decrypt_iv,
@@ -346,7 +346,7 @@ fn swapped(value: u8) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use crate::crypto::{CryptState, AES_BLOCK_SIZE};
+    use crate::crypto::{Ocb2Aes128Crypto, AES_BLOCK_SIZE};
 
     #[test]
     fn test_reverse_recovery() {
@@ -359,8 +359,8 @@ mod tests {
             0x9d, 0xb0, 0xcd, 0xf8, 0x80, 0xf7, 0x3e, 0x3e, 0x10, 0xd4, 0xeb, 0x32, 0x17, 0x76,
             0x66, 0x88,
         ];
-        let mut encryption = CryptState::new(key, encrypt_iv, decrypt_iv);
-        let mut decryption = CryptState::new(key, decrypt_iv, encrypt_iv);
+        let mut encryption = Ocb2Aes128Crypto::new(key, encrypt_iv, decrypt_iv);
+        let mut decryption = Ocb2Aes128Crypto::new(key, decrypt_iv, encrypt_iv);
         let secret = b"MyVerySecret".to_vec();
         let mut encrypted = vec![vec![]; 512];
 
@@ -399,8 +399,8 @@ mod tests {
             0x9d, 0xb0, 0xcd, 0xf8, 0x80, 0xf7, 0x3e, 0x3e, 0x10, 0xd4, 0xeb, 0x32, 0x17, 0x76,
             0x66, 0x88,
         ];
-        let mut encryption = CryptState::new(key, encrypt_iv, decrypt_iv);
-        let mut decryption = CryptState::new(key, decrypt_iv, encrypt_iv);
+        let mut encryption = Ocb2Aes128Crypto::new(key, encrypt_iv, decrypt_iv);
+        let mut decryption = Ocb2Aes128Crypto::new(key, decrypt_iv, encrypt_iv);
         let secret = b"MyVerySecret".to_vec();
 
         let mut encrypted = encryption.encrypt(&secret).ok().unwrap();
@@ -442,7 +442,7 @@ mod tests {
             0x0e, 0x0f,
         ];
         let mut tag = [0; 16];
-        let crypt_state = CryptState::new(key, [0; 16], [0; 16]);
+        let crypt_state = Ocb2Aes128Crypto::new(key, [0; 16], [0; 16]);
 
         assert!(crypt_state.ocb_encrypt(&source, &mut destination, key, &mut tag, true));
 
@@ -482,7 +482,7 @@ mod tests {
             0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22,
             0x11, 0x00,
         ];
-        let crypt_state = CryptState::new(key, [0; 16], [0; 16]);
+        let crypt_state = Ocb2Aes128Crypto::new(key, [0; 16], [0; 16]);
 
         for len in 0..128 {
             let mut src = Vec::with_capacity(len);
@@ -523,7 +523,7 @@ mod tests {
             0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22,
             0x11, 0x00,
         ];
-        let crypt = CryptState::new(key, nonce, nonce);
+        let crypt = Ocb2Aes128Crypto::new(key, nonce, nonce);
         let mut src = [0; AES_BLOCK_SIZE * 2];
         src[AES_BLOCK_SIZE - 1] = (AES_BLOCK_SIZE * 8) as u8;
         src.split_at_mut(AES_BLOCK_SIZE).1.fill(42);
@@ -562,7 +562,7 @@ mod tests {
             0xff, 0xee, 0xdd, 0xcc, 0xbb, 0xaa, 0x99, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22,
             0x11, 0x00,
         ];
-        let mut crypt = CryptState::new(key, nonce, nonce);
+        let mut crypt = Ocb2Aes128Crypto::new(key, nonce, nonce);
         let message = b"It was a funky funky town!";
         let mut encrypted = crypt.encrypt(message).ok().unwrap();
 

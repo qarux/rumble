@@ -1,170 +1,102 @@
 use std::sync::Arc;
 
-use crate::db::Db;
-use crate::proto::mumble::{
-    ChannelState, CodecVersion, CryptSetup, PermissionQuery, ServerConfig, ServerSync, UserState,
-    Version,
-};
-use crate::protocol::{MumblePacket, MUMBLE_PROTOCOL_VERSION};
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use crate::protocol::{AudioPacket, MumblePacket};
 
+use crate::crypto::Ocb2Aes128Crypto;
+
+use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf};
-use tokio::net::TcpStream;
+use tokio::net::{TcpStream, UdpSocket};
+use tokio::sync::Mutex;
+
+use tokio::sync::mpsc::Receiver;
 use tokio_rustls::TlsStream;
 
-pub struct Connection {
-    pub control_channel: ControlChannel,
-    pub session_id: u32,
-}
-
 pub struct ControlChannel {
-    reader: ControlChannelReader,
-    writer: ControlChannelWriter,
+    receiver: ControlChannelReceiver,
+    sender: ControlChannelSender,
 }
 
-pub struct ControlChannelReader {
+pub struct AudioChannel {
+    receiver: AudioChannelReceiver,
+    sender: AudioChannelSender,
+}
+
+pub struct ControlChannelReceiver {
     reader: ReadHalf<TlsStream<TcpStream>>,
 }
 
-pub struct ControlChannelWriter {
+pub struct ControlChannelSender {
     writer: WriteHalf<TlsStream<TcpStream>>,
 }
 
-pub struct ConnectionConfig {
-    pub max_bandwidth: u32,
-    pub welcome_text: String,
+pub struct AudioChannelReceiver {
+    raw_bytes_receiver: Receiver<Vec<u8>>,
+    crypto: Arc<Mutex<Ocb2Aes128Crypto>>,
+}
+
+pub struct AudioChannelSender {
+    socket: Arc<UdpSocket>,
+    crypto: Arc<Mutex<Ocb2Aes128Crypto>>,
+    destination: SocketAddr,
 }
 
 pub enum Error {
-    ConnectionSetupError,
-    AuthenticationError,
-    StreamError,
-}
-
-impl Connection {
-    pub async fn setup_connection(
-        db: Arc<Db>,
-        stream: TlsStream<TcpStream>,
-        config: ConnectionConfig,
-    ) -> Result<Connection, Error> {
-        let mut control_channel = ControlChannel::new(stream);
-
-        //Version exchange
-        let _ = match control_channel.read().await? {
-            MumblePacket::Version(version) => version,
-            _ => return Err(Error::ConnectionSetupError),
-        };
-        let mut version = Version::new();
-        version.set_version(MUMBLE_PROTOCOL_VERSION);
-        control_channel
-            .write(MumblePacket::Version(version))
-            .await?;
-
-        //Authentication
-        let mut auth = match control_channel.read().await? {
-            MumblePacket::Authenticate(auth) => auth,
-            _ => return Err(Error::ConnectionSetupError),
-        };
-        if !auth.has_username() {
-            return Err(Error::AuthenticationError);
-        }
-        let session_id = db.add_new_user(auth.take_username()).await;
-
-        //Crypt setup
-
-        //CodecVersion
-        let mut codec_version = CodecVersion::new();
-        codec_version.set_alpha(-2147483632);
-        codec_version.set_beta(0);
-        codec_version.set_prefer_alpha(true);
-        codec_version.set_opus(true);
-        control_channel
-            .write(MumblePacket::CodecVersion(codec_version))
-            .await?;
-
-        //Channel state
-        let channels = db.get_channels().await;
-        for channel in channels {
-            let mut channel_state = ChannelState::new();
-            channel_state.set_channel_id(channel.id);
-            channel_state.set_name(channel.name);
-            control_channel
-                .write(MumblePacket::ChannelState(channel_state))
-                .await?;
-        }
-
-        //PermissionQuery
-        let mut permission_query = PermissionQuery::new();
-        permission_query.set_permissions(134743822);
-        permission_query.set_channel_id(0);
-        control_channel
-            .write(MumblePacket::PermissionQuery(permission_query))
-            .await?;
-
-        //User states
-        let connected_users = db.get_connected_users().await;
-        for user in connected_users {
-            let mut user_state = UserState::new();
-            user_state.set_name(user.username);
-            user_state.set_session(user.session_id);
-            user_state.set_channel_id(user.channel_id);
-            control_channel
-                .write(MumblePacket::UserState(user_state))
-                .await?;
-        }
-
-        //Server sync
-        let mut server_sync = ServerSync::new();
-        server_sync.set_session(session_id);
-        server_sync.set_welcome_text(config.welcome_text);
-        server_sync.set_max_bandwidth(config.max_bandwidth);
-        server_sync.set_permissions(134743822);
-        control_channel
-            .write(MumblePacket::ServerSync(server_sync))
-            .await?;
-
-        //ServerConfig
-        let mut server_config = ServerConfig::new();
-        server_config.set_max_users(10);
-        server_config.set_allow_html(true);
-        server_config.set_message_length(5000);
-        server_config.set_image_message_length(131072);
-        control_channel
-            .write(MumblePacket::ServerConfig(server_config))
-            .await?;
-
-        Ok(Connection {
-            control_channel,
-            session_id,
-        })
-    }
+    IOError(std::io::Error),
+    ParsingError(crate::protocol::Error),
+    CryptError(crate::crypto::Error),
 }
 
 impl ControlChannel {
-    pub async fn read(&mut self) -> Result<MumblePacket, Error> {
-        self.reader.read().await
-    }
-
-    pub async fn write(&mut self, packet: MumblePacket) -> Result<(), Error> {
-        self.writer.write(packet).await
-    }
-
-    pub fn split(self) -> (ControlChannelReader, ControlChannelWriter) {
-        (self.reader, self.writer)
-    }
-
-    fn new(stream: TlsStream<TcpStream>) -> Self {
+    pub fn new(stream: TlsStream<TcpStream>) -> Self {
         let (reader, writer) = tokio::io::split(stream);
-        ControlChannel {
-            reader: ControlChannelReader { reader },
-            writer: ControlChannelWriter { writer },
-        }
+        let receiver = ControlChannelReceiver { reader };
+        let sender = ControlChannelSender { writer };
+
+        ControlChannel { receiver, sender }
+    }
+
+    pub async fn receive(&mut self) -> Result<MumblePacket, Error> {
+        self.receiver.receive().await
+    }
+
+    pub async fn send(&mut self, packet: MumblePacket) -> Result<(), Error> {
+        self.sender.send(packet).await
+    }
+
+    pub fn split(self) -> (ControlChannelReceiver, ControlChannelSender) {
+        (self.receiver, self.sender)
     }
 }
 
-impl ControlChannelReader {
-    pub async fn read(&mut self) -> Result<MumblePacket, Error> {
+impl AudioChannel {
+    pub fn new(
+        incoming_bytes_receiver: Receiver<Vec<u8>>,
+        socket: Arc<UdpSocket>,
+        crypto: Ocb2Aes128Crypto,
+        destination: SocketAddr,
+    ) -> Self {
+        let crypto = Arc::new(Mutex::new(crypto));
+        let receiver = AudioChannelReceiver {
+            raw_bytes_receiver: incoming_bytes_receiver,
+            crypto: Arc::clone(&crypto),
+        };
+        let sender = AudioChannelSender {
+            socket,
+            crypto: Arc::clone(&crypto),
+            destination,
+        };
+
+        AudioChannel { receiver, sender }
+    }
+
+    pub fn split(self) -> (AudioChannelReceiver, AudioChannelSender) {
+        (self.receiver, self.sender)
+    }
+}
+
+impl ControlChannelReceiver {
+    pub async fn receive(&mut self) -> Result<MumblePacket, Error> {
         let mut packet_type = [0; 2];
         let mut length = [0; 4];
         self.reader.read_exact(&mut packet_type).await?;
@@ -177,8 +109,8 @@ impl ControlChannelReader {
     }
 }
 
-impl ControlChannelWriter {
-    pub async fn write(&mut self, packet: MumblePacket) -> Result<(), Error> {
+impl ControlChannelSender {
+    pub async fn send(&mut self, packet: MumblePacket) -> Result<(), Error> {
         let bytes = packet.serialize();
         self.writer.write_all(&bytes).await?;
         self.writer.flush().await?;
@@ -186,14 +118,47 @@ impl ControlChannelWriter {
     }
 }
 
-impl From<crate::protocol::Error> for Error {
-    fn from(_: crate::protocol::Error) -> Self {
-        Error::StreamError
+impl AudioChannelSender {
+    pub async fn send(&mut self, packet: AudioPacket) -> Result<(), Error> {
+        let bytes = packet.serialize();
+        let encrypted = {
+            let mut crypto = self.crypto.lock().await;
+            crypto.encrypt(&bytes)?
+        };
+        self.socket.send_to(&encrypted, self.destination).await?;
+        Ok(())
+    }
+}
+
+impl AudioChannelReceiver {
+    pub async fn receive(&mut self) -> Result<AudioPacket, Error> {
+        match self.raw_bytes_receiver.recv().await {
+            Some(bytes) => {
+                let decrypted = {
+                    let mut crypto = self.crypto.lock().await;
+                    crypto.decrypt(&bytes)?
+                };
+                Ok(AudioPacket::parse(decrypted)?)
+            }
+            None => unimplemented!(),
+        }
     }
 }
 
 impl From<std::io::Error> for Error {
-    fn from(_: std::io::Error) -> Self {
-        Error::StreamError
+    fn from(error: std::io::Error) -> Self {
+        Error::IOError(error)
+    }
+}
+
+impl From<crate::protocol::Error> for Error {
+    fn from(error: crate::protocol::Error) -> Self {
+        Error::ParsingError(error)
+    }
+}
+
+impl From<crate::crypto::Error> for Error {
+    fn from(error: crate::crypto::Error) -> Self {
+        Error::CryptError(error)
     }
 }

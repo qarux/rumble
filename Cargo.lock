@@ -500,6 +500,7 @@ dependencies = [
  "clap",
  "protobuf",
  "protoc-rust",
+ "rand",
  "serde",
  "sled",
  "tokio",

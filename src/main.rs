@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::io::BufReader;
 
+use crate::server::Server;
 use clap::{App, Arg};
 use tokio::runtime::Builder;
 use tokio_rustls::rustls::{internal::pemfile, Certificate, PrivateKey};
@@ -64,9 +65,10 @@ fn main() {
         path_to_db_file: path,
     };
 
+    let server = Server::new(config);
     let tokio_rt = Builder::new_multi_thread().enable_all().build().unwrap();
     tokio_rt.block_on(async {
-        server::run(config).await.unwrap();
+        server.run().await;
     });
 }
 

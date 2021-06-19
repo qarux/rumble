@@ -8,6 +8,7 @@ use crate::proto::mumble::{
 };
 
 pub const MUMBLE_PROTOCOL_VERSION: u32 = 0b0000_0001_0011_0100;
+pub const MAX_AUDIO_PACKET_SIZE: usize = 1020;
 
 const VERSION: u16 = 0;
 const UDP_TUNNEL: u16 = 1;
@@ -41,7 +42,7 @@ const LENGTH_SIZE: usize = 4;
 
 pub enum MumblePacket {
     Version(Version),
-    UdpTunnel(VoicePacket),
+    UdpTunnel(AudioPacket),
     Authenticate(Authenticate),
     Ping(Ping),
     Reject(Reject),
@@ -68,8 +69,8 @@ pub enum MumblePacket {
     SuggestConfig(SuggestConfig),
 }
 
-pub enum VoicePacket {
-    Ping(VoicePing),
+pub enum AudioPacket {
+    Ping(AudioPing),
     AudioData(AudioData),
 }
 
@@ -78,7 +79,7 @@ pub enum Error {
     ParsingError,
 }
 
-pub struct VoicePing {
+pub struct AudioPing {
     bytes: Vec<u8>,
 }
 
@@ -96,7 +97,7 @@ impl MumblePacket {
     pub fn parse_payload(packet_type: u16, payload: &[u8]) -> Result<Self, Error> {
         match packet_type {
             VERSION => Ok(MumblePacket::Version(Version::parse_from_bytes(payload)?)),
-            UDP_TUNNEL => Ok(MumblePacket::UdpTunnel(VoicePacket::parse(
+            UDP_TUNNEL => Ok(MumblePacket::UdpTunnel(AudioPacket::parse(
                 payload.to_vec(),
             )?)),
             AUTHENTICATE => Ok(MumblePacket::Authenticate(Authenticate::parse_from_bytes(
@@ -246,19 +247,19 @@ impl MumblePacket {
     }
 }
 
-impl VoicePacket {
+impl AudioPacket {
     pub fn parse(bytes: Vec<u8>) -> Result<Self, Error> {
-        if bytes.is_empty() {
+        if bytes.is_empty() || bytes.len() > MAX_AUDIO_PACKET_SIZE {
             return Err(Error::ParsingError);
         }
 
         let header = bytes.first().unwrap();
         let (packet_type, _) = decode_header(*header);
         if packet_type == 1 {
-            return Ok(VoicePacket::Ping(VoicePing { bytes }));
+            return Ok(AudioPacket::Ping(AudioPing { bytes }));
         }
 
-        Ok(VoicePacket::AudioData(AudioData {
+        Ok(AudioPacket::AudioData(AudioData {
             session_id: None,
             bytes,
         }))
@@ -266,8 +267,8 @@ impl VoicePacket {
 
     pub fn serialize(self) -> Vec<u8> {
         match self {
-            VoicePacket::Ping(ping) => ping.bytes,
-            VoicePacket::AudioData(audio_data) => {
+            AudioPacket::Ping(ping) => ping.bytes,
+            AudioPacket::AudioData(audio_data) => {
                 if let Some(session_id) = audio_data.session_id {
                     let mut bytes = audio_data.bytes;
                     let varint = encode_varint(session_id as u64);
@@ -338,6 +339,7 @@ impl From<ProtobufError> for Error {
     }
 }
 
+//TODO write more tests
 #[cfg(test)]
 mod tests {
     use super::*;
