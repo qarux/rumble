@@ -364,9 +364,7 @@ mod tests {
         let secret = b"MyVerySecret".to_vec();
         let mut encrypted = vec![vec![]; 512];
 
-        for i in 0..128 {
-            encrypted[i] = encryption.encrypt(&secret).ok().unwrap();
-        }
+        encrypted[..128].fill_with(|| encryption.encrypt(&secret).ok().unwrap());
         for i in 0..30 {
             assert!(decryption.decrypt(&encrypted[127 - i]).is_ok());
         }
@@ -377,9 +375,7 @@ mod tests {
             assert!(decryption.decrypt(&encrypted[127 - i]).is_err());
         }
 
-        for i in 0..512 {
-            encrypted[i] = encryption.encrypt(&secret).ok().unwrap();
-        }
+        encrypted.fill_with(|| encryption.encrypt(&secret).ok().unwrap());
         for el in encrypted.iter() {
             assert!(decryption.decrypt(el).is_ok());
         }
@@ -539,7 +535,12 @@ mod tests {
             enc_tag[i] = src[AES_BLOCK_SIZE + i] ^ encrypted[AES_BLOCK_SIZE + i];
         }
 
-        let failed_decrypt = !crypt.ocb_decrypt(&encrypted, &mut decrypted, nonce, &mut dec_tag);
+        let failed_decrypt = !crypt.ocb_decrypt(
+            &encrypted[..AES_BLOCK_SIZE],
+            &mut decrypted[..AES_BLOCK_SIZE],
+            nonce,
+            &mut dec_tag,
+        );
 
         assert_eq!(enc_tag, dec_tag);
         assert!(failed_encrypt);
