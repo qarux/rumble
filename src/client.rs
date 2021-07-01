@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::task::JoinHandle;
+use log::{info, error};
 
 use crate::client::Error::StreamError;
 use crate::connection::{AudioChannel, AudioChannelSender, ControlChannel, ControlChannelSender};
@@ -37,14 +38,12 @@ pub struct Config {
     pub max_image_message_length: u32,
 }
 
-// from other connected users
 pub enum Message {
     UserConnected(u32),
     UserDisconnected(u32),
     UserTalking(AudioData),
 }
 
-// to other connected users
 pub enum ResponseMessage {
     Disconnected,
     Talking(AudioData),
@@ -181,9 +180,7 @@ impl Client {
             loop {
                 match receiver.receive().await {
                     Ok(packet) => {
-                        if inner_sender.try_send(InnerMessage::Audio(packet)).is_err() {
-                            return;
-                        }
+                        inner_sender.try_send(InnerMessage::Audio(packet));
                     }
                     Err(_) => return,
                 }
@@ -234,12 +231,14 @@ impl Client {
                     InnerMessage::Message(msg) => {
                         let result = handler.handle_message(msg).await;
                         if result.is_err() {
+                            handler.self_disconnected().await;
                             return;
                         }
                     }
                     InnerMessage::Packet(packet) => {
                         let result = handler.handle_mumble_packet(*packet).await;
                         if result.is_err() {
+                            handler.self_disconnected().await;
                             return;
                         }
                     }
@@ -250,6 +249,7 @@ impl Client {
                     InnerMessage::Audio(audio) => {
                         let result = handler.handle_audio_packet(audio).await;
                         if result.is_err() {
+                            handler.self_disconnected().await;
                             return;
                         }
                     }
@@ -320,7 +320,23 @@ impl Handler {
                         .try_send(ResponseMessage::Talking(audio_data));
                 }
             },
-            _ => println!("unimplemented!"),
+            MumblePacket::ChannelRemove(_) => error!("ChannelRemove unimplemented!"),
+            MumblePacket::ChannelState(_) => error!("ChannelState unimplemented!"),
+            MumblePacket::UserRemove(_) => error!("UserRemove unimplemented!"),
+            MumblePacket::UserState(_) => error!("UserState unimplemented!"),
+            MumblePacket::BanList(_) => error!("BanList unimplemented!"),
+            MumblePacket::TextMessage(_) => error!("TextMessage unimplemented!"),
+            MumblePacket::QueryUsers(_) => error!("TextMessage unimplemented!"),
+            MumblePacket::CryptSetup(_) => error!("CryptSetup unimplemented!"),
+            MumblePacket::ContextActionModify(_) => error!("ContextActionModify unimplemented!"),
+            MumblePacket::ContextAction(_) => error!("ContextAction unimplemented!"),
+            MumblePacket::UserList(_) => error!("UserList unimplemented!"),
+            MumblePacket::VoiceTarget(_) => error!("VoiceTarget unimplemented!"),
+            MumblePacket::PermissionQuery(_) => error!("PermissionQuery unimplemented!"),
+            MumblePacket::UserStats(_) => error!("UserStats unimplemented!"),
+            MumblePacket::RequestBlob(_) => error!("RequestBlob unimplemented!"),
+            // The rest is only sent by the server
+            _ => return Err(Error::WrongPacket),
         }
         Ok(())
     }
@@ -352,7 +368,7 @@ impl Handler {
             }
             AudioPacket::AudioData(mut audio_data) => {
                 audio_data.session_id = Some(self.session_id);
-                // It isn't critical to lost some audio packets
+                // It isn't critical to lose some audio packets
                 self.response_sender
                     .try_send(ResponseMessage::Talking(audio_data));
             }

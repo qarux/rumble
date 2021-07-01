@@ -15,6 +15,8 @@ mod protocol;
 mod server;
 
 fn main() {
+    env_logger::init();
+
     let matches = App::new("Rumble")
         .version("0.0.1")
         .about("Rumble is a mumble server written in Rust.")

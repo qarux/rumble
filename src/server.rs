@@ -17,6 +17,10 @@ use rand::{Rng, SeedableRng};
 
 use tokio::sync::mpsc::{Receiver, Sender};
 
+use log::{debug, info, warn, error};
+use std::io::Error;
+use tokio::sync::mpsc::error::TrySendError;
+
 pub const MAX_UDP_DATAGRAM_SIZE: usize = 1024;
 
 pub struct Config {
@@ -52,17 +56,32 @@ impl Server {
 
     pub async fn run(self: Arc<Self>) {
         let mut tls_config = ServerConfig::new(NoClientAuth::new());
-        tls_config
-            .set_single_cert(
-                vec![self.config.certificate.clone()],
-                self.config.private_key.clone(),
-            )
-            .expect("Invalid private key");
+        let result = tls_config.set_single_cert(
+            vec![self.config.certificate.clone()],
+            self.config.private_key.clone(),
+        );
+        if let Err(err) = result {
+            error!("{}", err);
+            panic!();
+        }
 
         let socket_address = SocketAddr::new(self.config.ip_address, self.config.port);
         let tls_acceptor = TlsAcceptor::from(Arc::new(tls_config));
-        let tcp_listener = TcpListener::bind(socket_address).await.unwrap();
-        let udp_socket = UdpSocket::bind(socket_address).await.unwrap();
+        let tcp_listener = match TcpListener::bind(socket_address).await {
+            Ok(listener) => listener,
+            Err(_) => {
+                error!("Couldn't bind tcp socket to {}", socket_address);
+                panic!();
+            }
+        };
+        let udp_socket = match UdpSocket::bind(socket_address).await {
+            Ok(socket) => socket,
+            Err(_) => {
+                error!("Couldn't bind udp socket to {}", socket_address);
+                panic!();
+            }
+        };
+        info!("Server listening on {}", socket_address);
 
         Arc::clone(&self).run_udp_task(udp_socket).await;
         Arc::clone(&self)
@@ -97,7 +116,7 @@ impl Server {
     async fn send_to_audio_channel(self: &Arc<Self>, buf: &[u8], address: &SocketAddr) -> bool {
         let connected = self.address_to_channel.read().await;
         if let Some(sender) = connected.get(address) {
-            sender.try_send(Vec::from(buf));
+            sender.send(Vec::from(buf)).await;
             return true;
         }
 
@@ -156,20 +175,33 @@ impl Server {
     }
 
     async fn process_new_connection(self: Arc<Self>, stream: TlsStream<TcpStream>) {
+        let address = stream.get_ref().0.peer_addr().unwrap();
+        info!("New connection: {}", address);
+
         let (session_id, mut responder) = match self.new_client(stream).await {
-            Ok(id) => id,
-            Err(_) => unimplemented!(),
+            Ok(id) => {
+                info!("Connection established successfully {}", address);
+                id
+            }
+            Err(_) => {
+                info!("Failed to establish connection {}", address);
+                return;
+            }
         };
 
         loop {
             let message = match responder.recv().await {
                 Some(msg) => msg,
-                None => return,
+                None => {
+                    warn!("Connection closed unexpectedly");
+                    return;
+                }
             };
 
             match message {
                 ResponseMessage::Disconnected => {
                     self.client_disconnected(session_id).await;
+                    info!("Disconnected {}", address);
                     return;
                 }
                 ResponseMessage::Talking(audio_data) => {
