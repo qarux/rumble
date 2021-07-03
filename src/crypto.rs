@@ -11,13 +11,13 @@ type Nonce = [u8; 16];
 type Tag = [u8; 16];
 
 pub struct Ocb2Aes128Crypto {
+    pub good: u32,
+    pub late: u32,
+    pub lost: u32,
     cipher: Aes128,
     encrypt_iv: Nonce,
     decrypt_iv: Nonce,
     decrypt_history: [u8; 256],
-    good: u32,
-    late: u32,
-    lost: u32,
 }
 
 pub enum Error {

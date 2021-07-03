@@ -7,7 +7,7 @@ use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio_rustls::rustls::{Certificate, NoClientAuth, PrivateKey, ServerConfig};
 use tokio_rustls::{TlsAcceptor, TlsStream};
 
-use crate::client::{Client, Message, ResponseMessage};
+use crate::client::{Client, ClientEvent, ServerEvent};
 use crate::connection::{AudioChannel, ControlChannel};
 use crate::crypto::Ocb2Aes128Crypto;
 use crate::db::Db;
@@ -17,9 +17,7 @@ use rand::{Rng, SeedableRng};
 
 use tokio::sync::mpsc::{Receiver, Sender};
 
-use log::{debug, info, warn, error};
-use std::io::Error;
-use tokio::sync::mpsc::error::TrySendError;
+use log::{error, info, warn};
 
 pub const MAX_UDP_DATAGRAM_SIZE: usize = 1024;
 
@@ -199,12 +197,12 @@ impl Server {
             };
 
             match message {
-                ResponseMessage::Disconnected => {
+                ClientEvent::Disconnected => {
                     self.client_disconnected(session_id).await;
                     info!("Disconnected {}", address);
                     return;
                 }
-                ResponseMessage::Talking(audio_data) => {
+                ClientEvent::Talking(audio_data) => {
                     self.client_talking(session_id, audio_data).await;
                 }
             }
@@ -216,7 +214,7 @@ impl Server {
         clients.remove(&session_id);
         for client in clients.values() {
             client
-                .send_message(Message::UserDisconnected(session_id))
+                .send_event(ServerEvent::UserDisconnected(session_id))
                 .await;
         }
         drop(clients);
@@ -246,7 +244,7 @@ impl Server {
             .filter(|client| client.session_id != session_id)
         {
             client
-                .send_message(Message::UserTalking(audio.clone()))
+                .send_event(ServerEvent::UserTalking(audio.clone()))
                 .await;
         }
     }
@@ -254,7 +252,7 @@ impl Server {
     async fn new_client(
         self: &Arc<Self>,
         stream: TlsStream<TcpStream>,
-    ) -> Result<(SessionId, Receiver<ResponseMessage>), crate::client::Error> {
+    ) -> Result<(SessionId, Receiver<ClientEvent>), crate::client::Error> {
         let ip = stream.get_ref().0.peer_addr().unwrap().ip();
         let config = self.create_client_config();
         let crypto =
@@ -267,7 +265,7 @@ impl Server {
         let mut clients = self.clients.write().await;
         for client in clients.values() {
             client
-                .send_message(Message::UserConnected(session_id))
+                .send_event(ServerEvent::UserConnected(session_id))
                 .await;
         }
         clients.insert(session_id, client);
