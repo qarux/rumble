@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU32, Ordering};
 use tokio::sync::RwLock;
 
 const ROOT_CHANNEL_ID: u32 = 0;
@@ -14,6 +15,7 @@ pub struct Db {
     users: sled::Tree,
     channels: sled::Tree,
     connected_users: RwLock<HashMap<SessionId, User>>,
+    next_session_id: AtomicU32,
 }
 
 #[derive(Clone)]
@@ -61,12 +63,13 @@ impl Db {
             users,
             channels,
             connected_users: RwLock::new(HashMap::new()),
+            next_session_id: AtomicU32::new(0),
         }
     }
 
     pub async fn add_new_user(&self, username: String) -> u32 {
+        let session_id = self.next_session_id.fetch_add(1, Ordering::SeqCst);
         let mut connected_users = self.connected_users.write().await;
-        let session_id = connected_users.len() as u32;
         connected_users.insert(
             session_id,
             User {
