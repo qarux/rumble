@@ -7,7 +7,7 @@ use crate::proto::mumble::{
     UserState, UserStats, Version, VoiceTarget, ACL as Acl,
 };
 
-pub const MUMBLE_PROTOCOL_VERSION: u32 = 0b0000_0001_0011_0100;
+pub const MUMBLE_PROTOCOL_VERSION: u32 = 0x10304;
 pub const MAX_AUDIO_PACKET_SIZE: usize = 1020;
 
 const VERSION: u16 = 0;
