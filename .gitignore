@@ -3,4 +3,4 @@
 rumble.iml
 
 # generated files
-src/proto/mumble.rs
+src/protocol/mumble.rs

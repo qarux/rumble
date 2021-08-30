@@ -1,7 +1,6 @@
-use std::cmp::Ordering;
-
 use aes::cipher::generic_array::GenericArray;
 use aes::{Aes128, BlockDecrypt, BlockEncrypt, NewBlockCipher};
+use std::cmp::Ordering;
 
 const AES_BLOCK_SIZE: usize = 16;
 const SHIFT_BITS: u8 = 7;
@@ -25,7 +24,6 @@ pub enum Error {
 }
 
 // Based on the official Mumble project CryptState implementation
-// TODO refactor this mess
 impl Ocb2Aes128Crypto {
     pub fn new(key: Key, encrypt_iv: Nonce, decrypt_iv: Nonce) -> Ocb2Aes128Crypto {
         Ocb2Aes128Crypto {
@@ -51,7 +49,7 @@ impl Ocb2Aes128Crypto {
         }
 
         let mut result = vec![0; plain.len() + 4];
-        if !self.ocb_encrypt(&plain, &mut result[4..], self.encrypt_iv, &mut tag, true) {
+        if !self.ocb_encrypt(plain, &mut result[4..], self.encrypt_iv, &mut tag, true) {
             return Err(Error::Fail);
         }
 
@@ -209,14 +207,14 @@ impl Ocb2Aes128Crypto {
             }
 
             s2(&mut delta);
-            xor(&mut tmp, &delta, &plain);
+            xor(&mut tmp, &delta, plain);
             if flip_a_bit {
                 tmp[0] ^= 1;
             }
             self.cipher
                 .encrypt_block(GenericArray::from_mut_slice(&mut tmp));
             xor(encrypted, &delta, &tmp);
-            xor_a(&mut checksum, &plain);
+            xor_a(&mut checksum, plain);
             if flip_a_bit {
                 checksum[0] ^= 1;
             }
@@ -268,7 +266,7 @@ impl Ocb2Aes128Crypto {
             self.cipher
                 .decrypt_block(GenericArray::from_mut_slice(&mut tmp));
             xor(plain, &delta, &tmp);
-            xor_a(&mut checksum, &plain);
+            xor_a(&mut checksum, plain);
 
             encrypted = &encrypted[AES_BLOCK_SIZE..];
             plain = &mut plain[AES_BLOCK_SIZE..];

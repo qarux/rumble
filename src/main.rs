@@ -1,18 +1,14 @@
-use std::fs::File;
-use std::io::BufReader;
-
 use crate::server::Server;
 use clap::{App, Arg};
+use std::fs::File;
+use std::io::BufReader;
 use tokio::runtime::Builder;
 use tokio_rustls::rustls::{internal::pemfile, Certificate, PrivateKey};
 
-mod client;
-mod connection;
 mod crypto;
-mod db;
-mod proto;
 mod protocol;
 mod server;
+mod storage;
 
 fn main() {
     env_logger::init();
@@ -59,7 +55,7 @@ fn main() {
     let keyfile = matches.value_of("private key").unwrap();
     let path = "db/".to_string();
 
-    let config = server::Config {
+    let config = crate::server::Config {
         ip_address: ip.parse().unwrap(),
         port: port.parse().unwrap(),
         certificate: read_certificate(cert_file),
