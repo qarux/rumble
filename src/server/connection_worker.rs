@@ -1,5 +1,5 @@
 use crate::crypto::Ocb2Aes128Crypto;
-use crate::protocol::parser::AudioData;
+use crate::protocol::parser::{AudioData, UserState};
 use crate::server::client::{Client, ClientEvent, Config, Error, ServerEvent};
 use crate::server::session_pool::{SessionId, SessionPool};
 use crate::server::tcp_control_channel::TcpControlChannel;
@@ -91,34 +91,44 @@ impl ConnectionWorker {
             let message = event_receiver.recv().await.unwrap();
             match message {
                 ClientEvent::Disconnected => {
-                    self.client_disconnected().await;
+                    self.clients.remove(&self.session_id);
+                    self.broadcast_disconnect().await;
+                    self.session_pool.push(self.session_id);
                     return;
                 }
                 ClientEvent::Talking(audio_data) => {
-                    self.client_talking(audio_data).await;
+                    self.broadcast_audio(audio_data).await;
+                }
+                ClientEvent::StateChanged(state) => {
+                    self.broadcast_state_change(state).await;
                 }
             }
         }
     }
 
-    async fn client_disconnected(&self) {
-        self.clients.remove(&self.session_id);
+    async fn broadcast_disconnect(&self) {
         for client in self.clients.iter() {
             client
                 .send_event(ServerEvent::Disconnected(self.session_id))
                 .await;
         }
-
-        self.session_pool.push(self.session_id);
     }
 
-    async fn client_talking(&self, audio: AudioData) {
+    async fn broadcast_audio(&self, audio: AudioData) {
         for client in self
             .clients
             .iter()
             .filter(|el| *el.key() != self.session_id)
         {
             client.send_event(ServerEvent::Talking(audio.clone())).await;
+        }
+    }
+
+    async fn broadcast_state_change(&self, state: UserState) {
+        for client in self.clients.iter() {
+            client
+                .send_event(ServerEvent::StateChanged(state.clone()))
+                .await;
         }
     }
 }

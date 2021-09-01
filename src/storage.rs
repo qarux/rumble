@@ -59,13 +59,13 @@ pub struct Guest {
     pub texture_hash: Option<Sha1Hash>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug, Default)]
 pub struct SessionData {
     pub muted_by_admin: bool,
     pub deafened_by_admin: bool,
     pub suppressed: bool,
-    pub muted: bool,
-    pub deafened: bool,
+    pub self_mute: bool,
+    pub self_deaf: bool,
     pub priority_speaker: bool,
     pub recording: bool,
 }
@@ -106,12 +106,15 @@ impl Storage {
     }
 
     pub fn add_guest(&self, guest: Guest) {
-        self.guests.insert(guest.session_id, guest);
+        let session_id = guest.session_id;
+        self.guests.insert(session_id, guest);
+        self.session_data.insert(session_id, SessionData::default());
     }
 
     pub fn add_connected_user(&self, user: User, session_id: SessionId) {
         self.connected_users
             .insert(session_id, (user.id, user.username));
+        self.session_data.insert(session_id, SessionData::default());
     }
 
     pub fn get_channels(&self) -> Vec<Channel> {
@@ -181,6 +184,10 @@ impl Storage {
             })
     }
 
+    pub fn update_session_data(&self, id: SessionId, data: SessionData) {
+        self.session_data.insert(id, data);
+    }
+
     pub fn username_in_connected(&self, username: &str) -> bool {
         if self
             .guests
@@ -228,8 +235,8 @@ impl SessionData {
             muted_by_admin: false,
             deafened_by_admin: false,
             suppressed: false,
-            muted: false,
-            deafened: false,
+            self_mute: false,
+            self_deaf: false,
             priority_speaker: false,
             recording: false,
         }

@@ -5,7 +5,7 @@ use crate::protocol::parser::{
     MUMBLE_PROTOCOL_VERSION,
 };
 use crate::server::client::client::{ClientEvent, ServerEvent};
-use crate::storage::{Guest, Storage};
+use crate::storage::{Guest, SessionData, Storage};
 use log::error;
 use ring::pbkdf2;
 use std::num::NonZeroU32;
@@ -154,8 +154,9 @@ impl<C: ControlChannel, A: AudioChannel> Handler<C, A> {
     pub async fn handle_server_event(&self, event: ServerEvent) -> Result<(), Error> {
         match event {
             ServerEvent::Connected(session_id) => self.new_user_connected(session_id).await?,
-            ServerEvent::Disconnected(session_id) => self.disconnected(session_id).await?,
-            ServerEvent::Talking(audio_data) => self.talking(audio_data).await?,
+            ServerEvent::StateChanged(state) => self.user_state_changed(state).await?,
+            ServerEvent::Talking(audio_data) => self.user_talking(audio_data).await?,
+            ServerEvent::Disconnected(session_id) => self.user_disconnected(session_id).await?,
         }
 
         Ok(())
@@ -164,6 +165,7 @@ impl<C: ControlChannel, A: AudioChannel> Handler<C, A> {
     pub async fn handle_message(&self, packet: ControlMessage) -> Result<(), Error> {
         match packet {
             ControlMessage::Ping(ping) => self.control_ping(ping).await?,
+            ControlMessage::UserState(state) => self.user_state(state).await?,
             ControlMessage::UdpTunnel(tunnel) => self.tunnel(tunnel).await?,
             _ => error!("unimplemented!"),
         }
@@ -212,6 +214,29 @@ impl<C: ControlChannel, A: AudioChannel> Handler<C, A> {
         Ok(())
     }
 
+    async fn user_state(&self, mut state: UserState) -> Result<(), Error> {
+        if state.session_id.is_none() {
+            state.session_id = Some(SessionId::from(self.session_id));
+        }
+
+        let session_data = SessionData {
+            muted_by_admin: state.muted_by_admin.unwrap_or_default(),
+            deafened_by_admin: state.deafened_by_admin.unwrap_or_default(),
+            suppressed: false,
+            self_mute: state.self_mute.unwrap_or_default(),
+            self_deaf: state.self_deaf.unwrap_or_default(),
+            priority_speaker: false,
+            recording: false,
+        };
+        self.storage
+            .update_session_data(self.session_id, session_data);
+        self.event_sender
+            .send(ClientEvent::StateChanged(state))
+            .await;
+
+        Ok(())
+    }
+
     async fn tunnel(&self, tunnel: UdpTunnel) -> Result<(), Error> {
         match tunnel.audio_packet {
             AudioPacket::Ping(_) => {
@@ -239,6 +264,7 @@ impl<C: ControlChannel, A: AudioChannel> Handler<C, A> {
                     session_id: id,
                     name: Some(user.username),
                     channel_id: Some(user.channel_id),
+                    ..Default::default()
                 })
                 .await?;
         } else if let Some(guest) = self.storage.get_guest(session_id) {
@@ -247,6 +273,7 @@ impl<C: ControlChannel, A: AudioChannel> Handler<C, A> {
                     session_id: id,
                     name: Some(guest.username),
                     channel_id: Some(guest.channel_id),
+                    ..Default::default()
                 })
                 .await?;
         }
@@ -254,7 +281,18 @@ impl<C: ControlChannel, A: AudioChannel> Handler<C, A> {
         Ok(())
     }
 
-    async fn talking(&self, audio_data: AudioData) -> Result<(), Error> {
+    async fn user_state_changed(&self, state: UserState) -> Result<(), Error> {
+        self.control_channel.send(state).await?;
+        Ok(())
+    }
+
+    async fn user_talking(&self, audio_data: AudioData) -> Result<(), Error> {
+        if let Some(data) = self.storage.get_session_data(self.session_id) {
+            if data.self_deaf || data.deafened_by_admin {
+                return Ok(());
+            }
+        }
+
         let audio_packet = AudioPacket::AudioData(audio_data);
         if let Some(channel) = self.audio_channel.as_ref() {
             channel.send(audio_packet).await?;
@@ -267,7 +305,7 @@ impl<C: ControlChannel, A: AudioChannel> Handler<C, A> {
         Ok(())
     }
 
-    async fn disconnected(&self, session_id: u32) -> Result<(), Error> {
+    async fn user_disconnected(&self, session_id: u32) -> Result<(), Error> {
         let user_remove = UserRemove {
             session_id: session_id.into(),
         };
@@ -330,6 +368,7 @@ impl<C: ControlChannel, A: AudioChannel> Handler<C, A> {
                 session_id: Some(SessionId::from(guest.session_id)),
                 name: Some(guest.username),
                 channel_id: Some(guest.channel_id),
+                ..Default::default()
             };
             states.push(state);
         }
@@ -339,6 +378,7 @@ impl<C: ControlChannel, A: AudioChannel> Handler<C, A> {
                 session_id: Some(SessionId::from(session_id)),
                 name: Some(user.username),
                 channel_id: Some(user.channel_id),
+                ..Default::default()
             };
             states.push(state);
         }

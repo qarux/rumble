@@ -155,11 +155,15 @@ pub struct UserRemove {
     pub session_id: SessionId,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct UserState {
     pub session_id: Option<SessionId>,
     pub name: Option<String>,
     pub channel_id: Option<u32>,
+    pub muted_by_admin: Option<bool>,
+    pub deafened_by_admin: Option<bool>,
+    pub self_mute: Option<bool>,
+    pub self_deaf: Option<bool>,
 }
 
 pub struct UdpTunnel {
@@ -183,6 +187,7 @@ impl ControlMessage {
             }
             CRYPT_SETUP => CryptSetup::from(mumble::CryptSetup::parse_from_bytes(payload)?).into(),
             PING => Ping::from(mumble::Ping::parse_from_bytes(payload)?).into(),
+            USER_STATE => UserState::from(mumble::UserState::parse_from_bytes(payload)?).into(),
             UDP_TUNNEL => ControlMessage::UdpTunnel(UdpTunnel {
                 audio_packet: AudioPacket::parse(payload.to_vec())?,
             }),
@@ -389,6 +394,10 @@ impl Message for UserState {
         let mut proto = mumble::UserState {
             name: SingularField::from(self.name),
             channel_id: self.channel_id,
+            mute: self.muted_by_admin,
+            deaf: self.deafened_by_admin,
+            self_mute: self.self_mute,
+            self_deaf: self.self_deaf,
             ..Default::default()
         };
         if let Some(session) = self.session_id {
@@ -520,14 +529,24 @@ impl From<mumble::Ping> for Ping {
     }
 }
 
+impl From<mumble::UserState> for UserState {
+    fn from(state: mumble::UserState) -> Self {
+        UserState {
+            session_id: state.session.map(SessionId::from),
+            name: state.name.into_option(),
+            channel_id: state.channel_id,
+            muted_by_admin: state.mute,
+            deafened_by_admin: state.deaf,
+            self_mute: state.self_mute,
+            self_deaf: state.self_deaf,
+        }
+    }
+}
+
 impl From<mumble::Version> for Version {
     fn from(version: mumble::Version) -> Self {
-        let mut protocol_version = None;
-        if let Some(version_number) = version.version {
-            protocol_version = Some(ProtocolVersion::from(version_number))
-        }
         Version {
-            version: protocol_version,
+            version: version.version.map(ProtocolVersion::from),
         }
     }
 }
