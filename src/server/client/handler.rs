@@ -1,8 +1,8 @@
 use crate::protocol::connection::{AudioChannel, ControlChannel};
 use crate::protocol::parser::{
     AudioData, AudioPacket, Authenticate, ChannelState, CodecVersion, ControlMessage, CryptSetup,
-    Ping, ServerConfig, ServerSync, SessionId, UdpTunnel, UserRemove, UserState, Version,
-    MUMBLE_PROTOCOL_VERSION,
+    Ping, ServerConfig, ServerSync, SessionId, TextMessage, UdpTunnel, UserRemove, UserState,
+    Version, MUMBLE_PROTOCOL_VERSION,
 };
 use crate::server::client::client::{ClientEvent, ServerEvent};
 use crate::storage::{Guest, SessionData, Storage};
@@ -157,6 +157,7 @@ impl<C: ControlChannel, A: AudioChannel> Handler<C, A> {
             ServerEvent::StateChanged(state) => self.user_state_changed(state).await?,
             ServerEvent::Talking(audio_data) => self.user_talking(audio_data).await?,
             ServerEvent::Disconnected(session_id) => self.user_disconnected(session_id).await?,
+            ServerEvent::TextMessage(message) => self.user_text_message(message).await?,
         }
 
         Ok(())
@@ -165,6 +166,7 @@ impl<C: ControlChannel, A: AudioChannel> Handler<C, A> {
     pub async fn handle_message(&self, packet: ControlMessage) -> Result<(), Error> {
         match packet {
             ControlMessage::Ping(ping) => self.control_ping(ping).await?,
+            ControlMessage::TextMessage(message) => self.text_message(message).await?,
             ControlMessage::UserState(state) => self.user_state(state).await?,
             ControlMessage::UdpTunnel(tunnel) => self.tunnel(tunnel).await?,
             _ => error!("unimplemented!"),
@@ -211,6 +213,20 @@ impl<C: ControlChannel, A: AudioChannel> Handler<C, A> {
         }
 
         self.control_channel.send(ping).await?;
+        Ok(())
+    }
+
+    async fn text_message(&self, mut message: TextMessage) -> Result<(), Error> {
+        if self.config.max_message_length < message.message.len() as u32 {
+            // TODO send a permission denied message
+            return Ok(());
+        }
+        if message.sender.is_none() {
+            message.sender = Some(SessionId::from(self.session_id));
+        }
+        self.event_sender
+            .send(ClientEvent::TextMessage(message))
+            .await;
         Ok(())
     }
 
@@ -310,6 +326,11 @@ impl<C: ControlChannel, A: AudioChannel> Handler<C, A> {
             session_id: session_id.into(),
         };
         Ok(self.control_channel.send(user_remove).await?)
+    }
+
+    async fn user_text_message(&self, message: TextMessage) -> Result<(), Error> {
+        self.control_channel.send(message).await?;
+        Ok(())
     }
 
     // Utils

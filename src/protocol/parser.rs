@@ -61,7 +61,7 @@ pub enum ControlMessage {
     ServerConfig(ServerConfig),
     ServerSync(ServerSync),
     SuggestConfig(),
-    TextMessage(),
+    TextMessage(TextMessage),
     UserList(),
     UserRemove(UserRemove),
     UserState(UserState),
@@ -151,6 +151,13 @@ pub struct ServerSync {
     pub welcome_text: String,
 }
 
+#[derive(Clone)]
+pub struct TextMessage {
+    pub sender: Option<SessionId>,
+    pub targets: Vec<u32>,
+    pub message: String,
+}
+
 pub struct UserRemove {
     pub session_id: SessionId,
 }
@@ -187,6 +194,9 @@ impl ControlMessage {
             }
             CRYPT_SETUP => CryptSetup::from(mumble::CryptSetup::parse_from_bytes(payload)?).into(),
             PING => Ping::from(mumble::Ping::parse_from_bytes(payload)?).into(),
+            TEXT_MESSAGE => {
+                TextMessage::from(mumble::TextMessage::parse_from_bytes(payload)?).into()
+            }
             USER_STATE => UserState::from(mumble::UserState::parse_from_bytes(payload)?).into(),
             UDP_TUNNEL => ControlMessage::UdpTunnel(UdpTunnel {
                 audio_packet: AudioPacket::parse(payload.to_vec())?,
@@ -379,6 +389,18 @@ impl Message for ServerSync {
     }
 }
 
+impl Message for TextMessage {
+    fn serialize(self) -> Vec<u8> {
+        let proto = mumble::TextMessage {
+            actor: self.sender.map(u32::from),
+            session: self.targets,
+            message: SingularField::some(self.message),
+            ..Default::default()
+        };
+        serialize_protobuf_message(proto, TEXT_MESSAGE)
+    }
+}
+
 impl Message for UserRemove {
     fn serialize(self) -> Vec<u8> {
         let proto = mumble::UserRemove {
@@ -474,6 +496,12 @@ impl From<ServerSync> for ControlMessage {
     }
 }
 
+impl From<TextMessage> for ControlMessage {
+    fn from(message: TextMessage) -> Self {
+        ControlMessage::TextMessage(message)
+    }
+}
+
 impl From<UserRemove> for ControlMessage {
     fn from(remove: UserRemove) -> Self {
         ControlMessage::UserRemove(remove)
@@ -525,6 +553,16 @@ impl From<mumble::Ping> for Ping {
             late: ping.resync,
             lost: ping.lost,
             resyncs: ping.resync,
+        }
+    }
+}
+
+impl From<mumble::TextMessage> for TextMessage {
+    fn from(message: mumble::TextMessage) -> Self {
+        TextMessage {
+            sender: message.actor.map(SessionId::from),
+            targets: message.session,
+            message: message.message.unwrap(),
         }
     }
 }

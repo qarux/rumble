@@ -1,5 +1,5 @@
 use crate::crypto::Ocb2Aes128Crypto;
-use crate::protocol::parser::{AudioData, UserState};
+use crate::protocol::parser::{AudioData, TextMessage, UserState};
 use crate::server::client::{Client, ClientEvent, Config, Error, ServerEvent};
 use crate::server::session_pool::{SessionId, SessionPool};
 use crate::server::tcp_control_channel::TcpControlChannel;
@@ -102,6 +102,9 @@ impl ConnectionWorker {
                 ClientEvent::StateChanged(state) => {
                     self.broadcast_state_change(state).await;
                 }
+                ClientEvent::TextMessage(message) => {
+                    self.broadcast_message(message).await;
+                }
             }
         }
     }
@@ -128,6 +131,17 @@ impl ConnectionWorker {
         for client in self.clients.iter() {
             client
                 .send_event(ServerEvent::StateChanged(state.clone()))
+                .await;
+        }
+    }
+
+    async fn broadcast_message(&self, message: TextMessage) {
+        for client in self.clients.iter().filter(|client| {
+            self.session_id != *client.key()
+                && (message.targets.is_empty() || message.targets.contains(client.key()))
+        }) {
+            client
+                .send_event(ServerEvent::TextMessage(message.clone()))
                 .await;
         }
     }

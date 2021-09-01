@@ -1,5 +1,5 @@
 use crate::protocol::connection::{AudioChannel, ControlChannel};
-use crate::protocol::parser::{AudioData, AudioPacket, UserState};
+use crate::protocol::parser::{AudioData, AudioPacket, TextMessage, UserState};
 use crate::server::client::handler::{Config, Error, Handler};
 use crate::storage::Storage;
 use std::marker::PhantomData;
@@ -19,6 +19,7 @@ pub struct Client<C: ControlChannel, A: AudioChannel> {
 pub enum ClientEvent {
     Talking(AudioData),
     StateChanged(UserState),
+    TextMessage(TextMessage),
     Disconnected,
 }
 
@@ -26,6 +27,7 @@ pub enum ServerEvent {
     Connected(u32),
     Talking(AudioData),
     StateChanged(UserState),
+    TextMessage(TextMessage),
     Disconnected(u32),
 }
 
