@@ -1,8 +1,9 @@
+use crate::protocol::parser::MUMBLE_PROTOCOL_VERSION;
 use crate::server::client::{Client, Config as ClientConfig};
 use crate::server::connection_worker::ConnectionWorker;
 use crate::server::session_pool::SessionPool;
 use crate::server::tcp_control_channel::TcpControlChannel;
-use crate::server::udp_audio_channel::{UdpAudioChannel, UdpWorker};
+use crate::server::udp_audio_channel::{ServerInfo, UdpAudioChannel, UdpWorker};
 use crate::storage::Storage;
 use dashmap::DashMap;
 use log::{error, info};
@@ -72,7 +73,13 @@ impl Server {
                 panic!();
             }
         };
-        let udp_worker = Arc::new(UdpWorker::start(udp_socket).await);
+        let server_info = ServerInfo {
+            version: MUMBLE_PROTOCOL_VERSION.into(),
+            connected_users: self.storage.watch_connected_count(),
+            max_users: 10,
+            max_bandwidth: 128000,
+        };
+        let udp_worker = Arc::new(UdpWorker::start(udp_socket, server_info).await);
         info!("Server listening on {}", socket_address);
 
         loop {

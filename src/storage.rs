@@ -1,6 +1,8 @@
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroU32;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 
 const ROOT_CHANNEL_ID: u32 = 0;
 const USER_TREE_NAME: &[u8] = b"users";
@@ -18,6 +20,7 @@ pub struct Storage {
     session_data: DashMap<SessionId, SessionData>,
     guests: DashMap<SessionId, Guest>,
     connected_users: DashMap<SessionId, (UserId, Username)>,
+    connected: Arc<AtomicU32>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -102,6 +105,7 @@ impl Storage {
             session_data: DashMap::new(),
             guests: DashMap::new(),
             connected_users: DashMap::new(),
+            connected: Default::default(),
         }
     }
 
@@ -109,12 +113,14 @@ impl Storage {
         let session_id = guest.session_id;
         self.guests.insert(session_id, guest);
         self.session_data.insert(session_id, SessionData::default());
+        self.connected.fetch_add(1, Ordering::SeqCst);
     }
 
     pub fn add_connected_user(&self, user: User, session_id: SessionId) {
         self.connected_users
             .insert(session_id, (user.id, user.username));
         self.session_data.insert(session_id, SessionData::default());
+        self.connected.fetch_add(1, Ordering::SeqCst);
     }
 
     pub fn get_channels(&self) -> Vec<Channel> {
@@ -208,10 +214,15 @@ impl Storage {
         }
     }
 
+    pub fn watch_connected_count(&self) -> Arc<AtomicU32> {
+        Arc::clone(&self.connected)
+    }
+
     pub fn remove_by_session_id(&self, id: SessionId) {
         self.connected_users.remove(&id);
         self.guests.remove(&id);
         self.session_data.remove(&id);
+        self.connected.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
