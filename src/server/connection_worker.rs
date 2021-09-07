@@ -3,7 +3,7 @@ use crate::protocol::parser::{AudioData, TextMessage, UserState};
 use crate::server::client::{Client, ClientEvent, Config, Error, ServerEvent};
 use crate::server::session_pool::{SessionId, SessionPool};
 use crate::server::tcp_control_channel::TcpControlChannel;
-use crate::server::udp_audio_channel::{UdpAudioChannel, UdpWorker};
+use crate::server::udp_worker::{UdpAudioChannel, UdpWorker};
 use crate::storage::Storage;
 use dashmap::DashMap;
 use log::info;

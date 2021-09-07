@@ -3,7 +3,7 @@ use crate::server::client::{Client, Config as ClientConfig};
 use crate::server::connection_worker::ConnectionWorker;
 use crate::server::session_pool::SessionPool;
 use crate::server::tcp_control_channel::TcpControlChannel;
-use crate::server::udp_audio_channel::{ServerInfo, UdpAudioChannel, UdpWorker};
+use crate::server::udp_worker::{ServerInfo, UdpAudioChannel, UdpWorker};
 use crate::storage::Storage;
 use dashmap::DashMap;
 use log::{error, info};
