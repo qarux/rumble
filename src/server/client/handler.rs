@@ -1,15 +1,16 @@
-use crate::protocol::connection::{AudioChannel, ControlChannel};
+use crate::protocol::connection::{AudioChannel, ControlChannel, Error};
 use crate::protocol::parser::{
     AudioData, AudioPacket, Authenticate, ChannelState, CodecVersion, ControlMessage, CryptSetup,
-    Ping, ServerConfig, ServerSync, SessionId, TextMessage, UdpTunnel, UserRemove, UserState,
-    Version, MUMBLE_PROTOCOL_VERSION,
+    ParsingError, Ping, ServerConfig, ServerSync, SessionId, TextMessage, UdpTunnel, UserRemove,
+    UserState, Version, MUMBLE_PROTOCOL_VERSION,
 };
-use crate::server::client::client::{ClientEvent, ServerEvent};
+use crate::server::client::client_worker::{ClientEvent, ServerEvent};
 use crate::storage::{Guest, SessionData, Storage};
 use log::error;
 use ring::pbkdf2;
 use std::num::NonZeroU32;
 use std::sync::Arc;
+use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::Sender;
 
 static PBKDF2_ALGORITHM: pbkdf2::Algorithm = pbkdf2::PBKDF2_HMAC_SHA256;
@@ -47,9 +48,15 @@ pub struct Config {
     pub pbkdf2_iterations: NonZeroU32,
 }
 
-pub enum Error {
+pub enum HandlerError {
     IO(std::io::Error),
-    PacketParsing(crate::protocol::parser::ParsingError),
+    PacketParsing(ParsingError),
+    EventReceiverClosed,
+}
+
+pub enum ConnectionSetupError {
+    IO(std::io::Error),
+    PacketParsing(ParsingError),
     Reject(Reject),
     WrongPacket,
 }
@@ -57,10 +64,10 @@ pub enum Error {
 pub enum Reject {
     InvalidUsername,
     UsernameInUse,
-    WrongVersion,
+    _WrongVersion,
     WrongUserPassword,
-    WrongServerPassword,
-    NoCertificate,
+    _WrongServerPassword,
+    _NoCertificate,
 }
 
 impl<C: ControlChannel, A: AudioChannel> Handler<C, A> {
@@ -88,17 +95,17 @@ impl<C: ControlChannel, A: AudioChannel> Handler<C, A> {
         self.audio_channel = Some(channel);
     }
 
-    pub async fn handle_new_connection(&self) -> Result<(), Error> {
+    pub async fn handle_new_connection(&self) -> Result<(), ConnectionSetupError> {
         match self.control_channel.receive().await? {
             ControlMessage::Version(_) => {
                 // TODO check version
             }
-            _ => return Err(Error::WrongPacket),
+            _ => return Err(ConnectionSetupError::WrongPacket),
         };
         // TODO
         let auth = match self.control_channel.receive().await? {
             ControlMessage::Authenticate(auth) => auth,
-            _ => return Err(Error::WrongPacket),
+            _ => return Err(ConnectionSetupError::WrongPacket),
         };
         self.authenticate(auth).await?;
 
@@ -110,15 +117,14 @@ impl<C: ControlChannel, A: AudioChannel> Handler<C, A> {
             client_nonce: Some(Vec::from(self.config.client_nonce)),
             server_nonce: Some(Vec::from(self.config.server_nonce)),
         };
-        let channel_states: Vec<ChannelState> = self
+        let channel_states = self
             .storage
             .get_channels()
             .into_iter()
             .map(|channel| ChannelState {
                 id: Some(channel.id),
                 name: Some(channel.name),
-            })
-            .collect();
+            });
         let user_states: Vec<UserState> = self.get_user_states();
         let codec_version = CodecVersion {
             celt_alpha_version: self.config.alpha_codec_version,
@@ -138,7 +144,7 @@ impl<C: ControlChannel, A: AudioChannel> Handler<C, A> {
 
         self.control_channel.send(version).await?;
         self.control_channel.send(crypt_setup).await?;
-        for channel_state in channel_states.into_iter() {
+        for channel_state in channel_states {
             self.control_channel.send(channel_state).await?;
         }
         for user_state in user_states.into_iter() {
@@ -151,7 +157,7 @@ impl<C: ControlChannel, A: AudioChannel> Handler<C, A> {
         Ok(())
     }
 
-    pub async fn handle_server_event(&self, event: ServerEvent) -> Result<(), Error> {
+    pub async fn handle_server_event(&self, event: ServerEvent) -> Result<(), HandlerError> {
         match event {
             ServerEvent::Connected(session_id) => self.new_user_connected(session_id).await?,
             ServerEvent::StateChanged(state) => self.user_state_changed(state).await?,
@@ -163,7 +169,7 @@ impl<C: ControlChannel, A: AudioChannel> Handler<C, A> {
         Ok(())
     }
 
-    pub async fn handle_message(&self, packet: ControlMessage) -> Result<(), Error> {
+    pub async fn handle_message(&self, packet: ControlMessage) -> Result<(), HandlerError> {
         match packet {
             ControlMessage::Ping(ping) => self.control_ping(ping).await?,
             ControlMessage::TextMessage(message) => self.text_message(message).await?,
@@ -174,29 +180,32 @@ impl<C: ControlChannel, A: AudioChannel> Handler<C, A> {
         Ok(())
     }
 
-    pub async fn handle_audio_packet(&self, packet: AudioPacket) -> Result<(), Error> {
+    pub async fn handle_audio_packet(&self, packet: AudioPacket) -> Result<(), HandlerError> {
         match packet {
             AudioPacket::Ping(_) => {
-                self.audio_channel.as_ref().unwrap().send(packet).await;
+                if let Some(channel) = self.audio_channel.as_ref() {
+                    channel.send(packet).await?;
+                }
             }
             AudioPacket::AudioData(mut audio_data) => {
                 audio_data.session_id = Some(SessionId::from(self.session_id));
                 self.event_sender
                     .send(ClientEvent::Talking(audio_data))
-                    .await;
+                    .await?;
             }
         }
 
         Ok(())
     }
 
-    pub async fn self_disconnected(&self) {
+    pub async fn self_disconnected(&self) -> Result<(), HandlerError> {
         self.storage.remove_by_session_id(self.session_id);
-        self.event_sender.send(ClientEvent::Disconnected).await;
+        self.event_sender.send(ClientEvent::Disconnected).await?;
+        Ok(())
     }
 
     // Control packets
-    async fn control_ping(&self, incoming: Ping) -> Result<(), Error> {
+    async fn control_ping(&self, incoming: Ping) -> Result<(), HandlerError> {
         let mut ping = Ping {
             timestamp: incoming.timestamp,
             good: None,
@@ -216,9 +225,9 @@ impl<C: ControlChannel, A: AudioChannel> Handler<C, A> {
         Ok(())
     }
 
-    async fn text_message(&self, mut message: TextMessage) -> Result<(), Error> {
+    async fn text_message(&self, mut message: TextMessage) -> Result<(), HandlerError> {
         if self.config.max_message_length < message.message.len() as u32 {
-            // TODO send a permission denied message
+            // TODO send the permission denied message
             return Ok(());
         }
         if message.sender.is_none() {
@@ -226,11 +235,11 @@ impl<C: ControlChannel, A: AudioChannel> Handler<C, A> {
         }
         self.event_sender
             .send(ClientEvent::TextMessage(message))
-            .await;
+            .await?;
         Ok(())
     }
 
-    async fn user_state(&self, mut state: UserState) -> Result<(), Error> {
+    async fn user_state(&self, mut state: UserState) -> Result<(), HandlerError> {
         if state.session_id.is_none() {
             state.session_id = Some(SessionId::from(self.session_id));
         }
@@ -248,12 +257,12 @@ impl<C: ControlChannel, A: AudioChannel> Handler<C, A> {
             .update_session_data(self.session_id, session_data);
         self.event_sender
             .send(ClientEvent::StateChanged(state))
-            .await;
+            .await?;
 
         Ok(())
     }
 
-    async fn tunnel(&self, tunnel: UdpTunnel) -> Result<(), Error> {
+    async fn tunnel(&self, tunnel: UdpTunnel) -> Result<(), HandlerError> {
         match tunnel.audio_packet {
             AudioPacket::Ping(_) => {
                 self.control_channel
@@ -264,7 +273,7 @@ impl<C: ControlChannel, A: AudioChannel> Handler<C, A> {
                 audio_data.session_id = Some(SessionId::from(self.session_id));
                 self.event_sender
                     .send(ClientEvent::Talking(audio_data))
-                    .await;
+                    .await?;
             }
         }
 
@@ -272,7 +281,7 @@ impl<C: ControlChannel, A: AudioChannel> Handler<C, A> {
     }
 
     // Server events
-    async fn new_user_connected(&self, session_id: u32) -> Result<(), Error> {
+    async fn new_user_connected(&self, session_id: u32) -> Result<(), HandlerError> {
         let id = Some(SessionId::from(session_id));
         if let Some(user) = self.storage.get_connected_user(session_id) {
             self.control_channel
@@ -297,12 +306,12 @@ impl<C: ControlChannel, A: AudioChannel> Handler<C, A> {
         Ok(())
     }
 
-    async fn user_state_changed(&self, state: UserState) -> Result<(), Error> {
+    async fn user_state_changed(&self, state: UserState) -> Result<(), HandlerError> {
         self.control_channel.send(state).await?;
         Ok(())
     }
 
-    async fn user_talking(&self, audio_data: AudioData) -> Result<(), Error> {
+    async fn user_talking(&self, audio_data: AudioData) -> Result<(), HandlerError> {
         if let Some(data) = self.storage.get_session_data(self.session_id) {
             if data.self_deaf || data.deafened_by_admin {
                 return Ok(());
@@ -321,30 +330,30 @@ impl<C: ControlChannel, A: AudioChannel> Handler<C, A> {
         Ok(())
     }
 
-    async fn user_disconnected(&self, session_id: u32) -> Result<(), Error> {
+    async fn user_disconnected(&self, session_id: u32) -> Result<(), HandlerError> {
         let user_remove = UserRemove {
             session_id: session_id.into(),
         };
         Ok(self.control_channel.send(user_remove).await?)
     }
 
-    async fn user_text_message(&self, message: TextMessage) -> Result<(), Error> {
+    async fn user_text_message(&self, message: TextMessage) -> Result<(), HandlerError> {
         self.control_channel.send(message).await?;
         Ok(())
     }
 
     // Utils
-    async fn authenticate(&self, auth: Authenticate) -> Result<(), Error> {
+    async fn authenticate(&self, auth: Authenticate) -> Result<(), ConnectionSetupError> {
         let username = match auth.username {
             Some(username) => username,
-            None => return Err(Error::Reject(Reject::InvalidUsername)),
+            None => return Err(ConnectionSetupError::Reject(Reject::InvalidUsername)),
         };
         if !validate_username(&username, self.config.max_username_length as usize) {
-            return Err(Error::Reject(Reject::InvalidUsername));
+            return Err(ConnectionSetupError::Reject(Reject::InvalidUsername));
         }
 
         if self.storage.username_in_connected(&username) {
-            return Err(Error::Reject(Reject::UsernameInUse));
+            return Err(ConnectionSetupError::Reject(Reject::UsernameInUse));
         }
 
         let user = match self.storage.get_user_by_username(username.clone()) {
@@ -363,7 +372,7 @@ impl<C: ControlChannel, A: AudioChannel> Handler<C, A> {
         ) {
             let password = match auth.password {
                 Some(password) => password,
-                None => return Err(Error::Reject(Reject::WrongUserPassword)),
+                None => return Err(ConnectionSetupError::Reject(Reject::WrongUserPassword)),
             };
             pbkdf2::verify(
                 PBKDF2_ALGORITHM,
@@ -372,7 +381,7 @@ impl<C: ControlChannel, A: AudioChannel> Handler<C, A> {
                 password.as_bytes(),
                 stored_password_hash,
             )
-            .map_err(|_| Error::Reject(Reject::WrongUserPassword))?;
+            .map_err(|_| ConnectionSetupError::Reject(Reject::WrongUserPassword))?;
         }
 
         self.storage.add_connected_user(user, self.session_id);
@@ -413,11 +422,26 @@ fn validate_username(username: &str, max_username_length: usize) -> bool {
         && username.len() <= max_username_length
 }
 
-impl From<crate::protocol::connection::Error> for Error {
+impl From<Error> for HandlerError {
     fn from(err: crate::protocol::connection::Error) -> Self {
         match err {
-            crate::protocol::connection::Error::IO(err) => Error::IO(err),
-            crate::protocol::connection::Error::Parsing(err) => Error::PacketParsing(err),
+            Error::IO(err) => HandlerError::IO(err),
+            Error::Parsing(err) => HandlerError::PacketParsing(err),
         }
+    }
+}
+
+impl From<Error> for ConnectionSetupError {
+    fn from(err: Error) -> Self {
+        match err {
+            Error::IO(err) => ConnectionSetupError::IO(err),
+            Error::Parsing(err) => ConnectionSetupError::PacketParsing(err),
+        }
+    }
+}
+
+impl From<SendError<ClientEvent>> for HandlerError {
+    fn from(_: SendError<ClientEvent>) -> Self {
+        HandlerError::EventReceiverClosed
     }
 }

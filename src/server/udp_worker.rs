@@ -87,15 +87,19 @@ impl UdpWorker {
                         if len <= ENCRYPTION_OVERHEAD || len > MAX_DATAGRAM_SIZE {
                             continue;
                         } else if len == INFO_PING_SIZE {
-                            Self::response_to_ping(
+                            if let Err(err) = Self::response_to_ping(
                                 &buf[..12].try_into().unwrap(),
                                 &socket,
                                 address,
                                 &info,
                             )
-                            .await;
+                            .await
+                            {
+                                error!("UDP socket error: {}", err);
+                                break;
+                            };
                         } else if let Some(sender) = senders.get(&address).as_deref() {
-                            sender.send(Vec::from(&buf[..len])).await;
+                            sender.send(Vec::from(&buf[..len])).await.unwrap();
                         } else {
                             Self::check_queue(
                                 &queue,
@@ -106,8 +110,8 @@ impl UdpWorker {
                             );
                         }
                     }
-                    Err(error) => {
-                        error!("UDP task error: {}", error);
+                    Err(err) => {
+                        error!("UDP socket error: {}", err);
                         break;
                     }
                 }
@@ -142,7 +146,7 @@ impl UdpWorker {
                 destination: address,
                 senders,
             };
-            channel_sender.send(channel);
+            channel_sender.send(channel).ok();
 
             if list.is_empty() {
                 remove = true;
@@ -158,9 +162,9 @@ impl UdpWorker {
         socket: &UdpSocket,
         origin: SocketAddr,
         info: &ServerInfo,
-    ) {
+    ) -> std::io::Result<usize> {
         let bytes = Self::create_response(ping, info);
-        socket.send_to(&bytes, origin).await;
+        socket.send_to(&bytes, origin).await
     }
 
     fn create_response(ping: &[u8; INFO_PING_SIZE], info: &ServerInfo) -> [u8; RESPONSE_SIZE] {

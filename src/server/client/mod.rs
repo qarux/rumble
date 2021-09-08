@@ -1,5 +1,5 @@
-mod client;
+mod client_worker;
 mod handler;
 
-pub use self::client::{Client, ClientEvent, ServerEvent};
-pub use self::handler::{Config, Error};
+pub use self::client_worker::{ClientWorker, ClientEvent, ServerEvent};
+pub use self::handler::{Config, ConnectionSetupError};

@@ -91,13 +91,12 @@ impl Storage {
             position: None,
         })
         .unwrap();
-        channels
-            .compare_and_swap(
-                to_bytes(ROOT_CHANNEL_ID),
-                Option::<&[u8]>::None,
-                Some(root_channel),
-            )
-            .unwrap();
+
+        if !channels.contains_key(to_bytes(ROOT_CHANNEL_ID)).unwrap() {
+            channels
+                .insert(to_bytes(ROOT_CHANNEL_ID), root_channel)
+                .unwrap();
+        }
 
         Storage {
             users,
@@ -195,23 +194,13 @@ impl Storage {
     }
 
     pub fn username_in_connected(&self, username: &str) -> bool {
-        if self
-            .guests
+        self.guests
             .iter()
-            .find(|entry| entry.value().username == username)
-            .is_some()
-        {
-            true
-        } else if self
-            .connected_users
-            .iter()
-            .find(|entry| entry.value().1 == username)
-            .is_some()
-        {
-            true
-        } else {
-            false
-        }
+            .any(|entry| entry.value().username == username)
+            || self
+                .connected_users
+                .iter()
+                .any(|entry| entry.value().1 == username)
     }
 
     pub fn watch_connected_count(&self) -> Arc<AtomicU32> {
@@ -236,20 +225,6 @@ impl Guest {
             texture: None,
             comment_hash: None,
             texture_hash: None,
-        }
-    }
-}
-
-impl SessionData {
-    fn new() -> Self {
-        SessionData {
-            muted_by_admin: false,
-            deafened_by_admin: false,
-            suppressed: false,
-            self_mute: false,
-            self_deaf: false,
-            priority_speaker: false,
-            recording: false,
         }
     }
 }

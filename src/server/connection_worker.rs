@@ -1,6 +1,6 @@
 use crate::crypto::Ocb2Aes128Crypto;
 use crate::protocol::parser::{AudioData, TextMessage, UserState};
-use crate::server::client::{Client, ClientEvent, Config, Error, ServerEvent};
+use crate::server::client::{ClientWorker, ClientEvent, Config, ConnectionSetupError, ServerEvent};
 use crate::server::session_pool::{SessionId, SessionPool};
 use crate::server::tcp_control_channel::TcpControlChannel;
 use crate::server::udp_worker::{UdpAudioChannel, UdpWorker};
@@ -16,14 +16,14 @@ pub struct ConnectionWorker {
     session_id: SessionId,
     session_pool: Arc<SessionPool>,
     storage: Arc<Storage>,
-    clients: Arc<DashMap<SessionId, Client<TcpControlChannel, UdpAudioChannel>>>,
+    clients: Arc<DashMap<SessionId, ClientWorker<TcpControlChannel, UdpAudioChannel>>>,
 }
 
 impl ConnectionWorker {
     pub fn new(
         session_pool: Arc<SessionPool>,
         storage: Arc<Storage>,
-        clients: Arc<DashMap<SessionId, Client<TcpControlChannel, UdpAudioChannel>>>,
+        clients: Arc<DashMap<SessionId, ClientWorker<TcpControlChannel, UdpAudioChannel>>>,
     ) -> Self {
         ConnectionWorker {
             session_id: session_pool.pop(),
@@ -51,12 +51,12 @@ impl ConnectionWorker {
         stream: TlsStream<TcpStream>,
         config: Config,
         worker: Arc<UdpWorker>,
-    ) -> Result<(), Error> {
+    ) -> Result<(), ConnectionSetupError> {
         let address = stream.get_ref().0.peer_addr().unwrap();
         let crypto =
             Ocb2Aes128Crypto::new(config.crypto_key, config.server_nonce, config.client_nonce);
         let control_channel = TcpControlChannel::new(stream);
-        let (client, event_receiver) = Client::setup_connection(
+        let (client, event_receiver) = ClientWorker::setup_connection(
             self.session_id,
             Arc::clone(&self.storage),
             control_channel,
